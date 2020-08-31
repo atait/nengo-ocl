@@ -28,6 +28,7 @@ except ImportError:
     import pickle
 import sys
 import time
+import yaml
 
 import numpy as np
 import pyopencl as cl
@@ -136,6 +137,9 @@ for i, n_neurons in enumerate(ns_neurons):
             sim.run(simtime)
             t_run = time.time()
 
+            if getattr(sim, "profiling", False):
+                sim.print_profiling(sort=1)
+
         records.append(
             OrderedDict(
                 (
@@ -153,8 +157,7 @@ for i, n_neurons in enumerate(ns_neurons):
         )
         print(records[-1])
         print("%s, n_neurons=%d successful" % (sim_name, n_neurons))
-        if getattr(sim, "profiling", False):
-            sim.print_profiling(sort=1)
+        del model, sim
     except Exception as e:
         records.append(
             OrderedDict(
@@ -172,8 +175,8 @@ for i, n_neurons in enumerate(ns_neurons):
         print("%s, n_neurons=%d exception" % (sim_name, n_neurons))
         raise
 
-filename = "records_wattsstrogatz_%s.pkl" % (
+filename = "records_wattsstrogatz_%s.yml" % (
     (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 )
-with open(filename, "wb") as fh:
-    pickle.dump(records, fh)
+with open(filename, "w") as fh:
+    yaml.dump(records, fh)
