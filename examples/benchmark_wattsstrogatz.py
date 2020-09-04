@@ -55,13 +55,13 @@ elif sys.argv[1].startswith("ocl"):
     ctx = cl.create_some_context()
     sim_name = ctx.devices[0].name if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_ocl.Simulator
-    sim_kwargs = dict(context=ctx, profiling=profiling)
+    sim_kwargs = dict(context=ctx, profiling=profiling, progress_bar=True)
 elif sys.argv[1] == "dl":
     import nengo_dl
 
     sim_name = "dl" if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_dl.Simulator
-    sim_kwargs = dict()
+    sim_kwargs = dict(progress_bar=True)
 else:
     raise Exception("unknown sim", sys.argv[1])
 
@@ -73,6 +73,7 @@ simtime = 1.0
 fan_outs = 8
 rewire_frac = 0.2
 directed = True
+n_prealloc_probes = 32  # this applies to OCL and DL
 sparse = True  # setting to False will probably overwhelm your GPU memory
 
 
@@ -105,6 +106,9 @@ for i, n_neurons in enumerate(ns_neurons):
 
     rng = np.random.RandomState(123)
     # a = rng.normal(scale=np.sqrt(1./dim), size=n_neurons)
+    # profiler = LineProfiler()
+    if sys.argv[1].startswith('ocl'):
+        sim_kwargs['n_prealloc_probes'] = n_prealloc_probes
 
     # --- Model
     with nengo.Network(seed=9) as model:
@@ -130,6 +134,8 @@ for i, n_neurons in enumerate(ns_neurons):
 
         # -- build
         with sim_class(model, **sim_kwargs) as sim:
+            # profiler.add_function(sim._probe_outputs[E_p].step)
+            # profiler.enable_by_count()
             t_sim = time.time()
 
             # -- warmup
@@ -137,7 +143,14 @@ for i, n_neurons in enumerate(ns_neurons):
             t_warm = time.time()
 
             # -- long-term timing
-            sim.run(simtime)
+            if sys.argv[1] == "dl":
+                n_steps = int(simtime / sim.dt) + simtime % sim.dt > 0
+                for _ in range(n_steps // n_prealloc_probes):
+                    sim.run_steps(n_prealloc_probes)
+                if n_steps % n_prealloc_probes > 0:
+                    sim.run_steps(n_steps % n_prealloc_probes)
+            else:
+                sim.run(simtime)
             t_run = time.time()
 
             if getattr(sim, "profiling", False):
@@ -161,7 +174,7 @@ for i, n_neurons in enumerate(ns_neurons):
         print(records[-1])
         print("%s, n_neurons=%d successful" % (sim_name, n_neurons))
         del model, sim
-            sim.print_profiling(sort=1)
+        # profiler.print_stats()
     except Exception as e:
         records.append(
             OrderedDict(

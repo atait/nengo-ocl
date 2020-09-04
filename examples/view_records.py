@@ -5,11 +5,15 @@ from collections import OrderedDict
 
 by_name = OrderedDict()
 
+is_wattsstrogatz = None
 for recfile in sys.argv[1:]:
     records = yaml.load(open(recfile, "r"), Loader=yaml.Loader)
     for rec in records:
         rec["filename"] = recfile
         by_name.setdefault(rec["name"], []).append(rec)
+    if is_wattsstrogatz is None:
+        is_wattsstrogatz = "wattsstrogatz" in recfile
+    assert ("wattsstrogatz" in recfile) == is_wattsstrogatz
 
 import matplotlib.pyplot as plt
 
@@ -37,7 +41,9 @@ for name, recs in nr:
         name = "Intel Core i7-3770 @ 3.40GHz"
 
     oks = [rec for rec in recs if rec["status"] == "ok"]
-    dims = [rec["dim"] for rec in oks]
+    dims = [rec["dim" if not is_wattsstrogatz else "n_neurons"] for rec in oks]
+    buildtimes = [rec["buildtime"] for rec in oks]
+    warmtimes = [rec["warmtime"] for rec in oks]
     runtimes = [rec["runtime"] for rec in oks]
     filenames = [rec["filename"] for rec in oks]
     for dim, rt, fname in zip(dims, runtimes, filenames):
@@ -45,7 +51,7 @@ for name, recs in nr:
     plt.plot(dims, runtimes, ".-", markersize=30, label=name.strip())
     # plt.semilogy(dims, runtimes, '.-', markersize=30, label=name.strip())
 
-plt.xlabel("n. dimensions convolved")
+plt.xlabel("n. dimensions convolved" if not is_wattsstrogatz else "n. neurons")
 plt.ylabel("simulation time (seconds)")
 # plt.ylim(0, 20)
 plt.legend(loc=2)
