@@ -66,6 +66,7 @@ else:
     raise Exception("unknown sim", sys.argv[1])
 
 ns_neurons = map(int, sys.argv[2].split(","))
+# ns_neurons = 10 * list(ns_neurons)  # repeat to build statistics on short simulations
 
 ### User options ###
 simtime = 1.0
@@ -139,6 +140,9 @@ for i, n_neurons in enumerate(ns_neurons):
             sim.run(simtime)
             t_run = time.time()
 
+            if getattr(sim, "profiling", False):
+                sim.print_profiling(sort=1)
+
         records.append(
             OrderedDict(
                 (
@@ -156,7 +160,7 @@ for i, n_neurons in enumerate(ns_neurons):
         )
         print(records[-1])
         print("%s, n_neurons=%d successful" % (sim_name, n_neurons))
-        if getattr(sim, "profiling", False):
+        del model, sim
             sim.print_profiling(sort=1)
     except Exception as e:
         records.append(
