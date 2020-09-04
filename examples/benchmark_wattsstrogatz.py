@@ -21,13 +21,14 @@ Example usage:
 
 from collections import OrderedDict
 import datetime
-
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
+import logging
 import sys
 import time
+import yaml
+try:
+    from line_profiler import LineProfiler
+except ImportError:
+    pass
 
 import numpy as np
 import pyopencl as cl
@@ -36,6 +37,9 @@ import nengo
 from nengo.utils.numpy import scipy_sparse
 
 import nengo_ocl
+
+
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 if len(sys.argv) not in (3, 4):
     print(__doc__)
@@ -172,8 +176,8 @@ for i, n_neurons in enumerate(ns_neurons):
         print("%s, n_neurons=%d exception" % (sim_name, n_neurons))
         raise
 
-filename = "records_wattsstrogatz_%s.pkl" % (
+filename = "records_wattsstrogatz_%s.yml" % (
     (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 )
-with open(filename, "wb") as fh:
-    pickle.dump(records, fh)
+with open(filename, "w") as fh:
+    yaml.dump(records, fh)
