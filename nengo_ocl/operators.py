@@ -1,8 +1,9 @@
 from collections import OrderedDict
+import numpy as np
 
-from nengo.builder.operator import Operator, BsrDotInc, DotInc
+from nengo.builder.operator import Operator, BsrDotInc, DotInc, ElementwiseInc, Reset
 from nengo.builder.signal import Signal
-
+from nengo.transforms import SparseMatrix
 
 class MultiDotInc(Operator):
     r"""``y <- gamma + beta * y_in + \sum_i dot(A_i, x_i)``"""
@@ -176,3 +177,91 @@ class MultiDotInc(Operator):
             X_views.append(X_view)
 
         return A_views, X_views, Y_view, Y_in_view, beta_view
+
+
+def signal_io_dicts(operators):
+    """
+    Organizes operators into dictionaries according to the signals they
+    set/inc/read/update.
+
+    See Nengo DL for full documentation
+    """
+
+    # note: we manually initialize the arrays because we want there to be
+    # an entry for all the signal bases, but get an error if we try to
+    # access any non-base signals
+    sets = {s.base: [] for op in operators for s in op.all_signals}
+    incs = {s.base: [] for op in operators for s in op.all_signals}
+    reads = {s.base: [] for op in operators for s in op.all_signals}
+    updates = {s.base: [] for op in operators for s in op.all_signals}
+
+    for op in operators:
+        for s in op.sets:
+            sets[s.base].append(op)
+        for s in op.incs:
+            incs[s.base].append(op)
+        for s in op.reads:
+            reads[s.base].append(op)
+        for s in op.updates:
+            updates[s.base].append(op)
+
+    return sets, incs, reads, updates
+
+
+def remove_zero_incs(operators):
+    """
+    Remove any operators where we know the input (and therefore output) is
+    zero.
+
+    See Nengo DL for full documentation
+    """
+
+    def all_zero(sig):
+        data = sig.initial_value
+        if sig.sparse:
+            if not isinstance(data, SparseMatrix):
+                data = data.tocoo()
+            data = data.data
+
+        return np.all(data == 0)
+
+    sets, incs, _, updates = signal_io_dicts(operators)
+
+    new_operators = []
+    for op in operators:
+        if isinstance(op, (DotInc, ElementwiseInc)):
+            for src in op.reads:
+                # check if the input is the output of a Node (in which case the
+                # value might change, so we should never get rid of this op).
+                # checking the name of the signal seems a bit fragile, but I
+                # can't think of a better solution
+                if src.name.startswith("<Node"):
+                    continue
+
+                # find any ops that modify src
+                pred = sets[src.base] + incs[src.base]
+
+                # the input (and therefore output) will be zero if the only
+                # input is a Reset(0) op, or the only input is a constant
+                # signal (not set/inc/updated) that is all zero
+                zero_input = (
+                    (
+                        len(pred) == 1
+                        and type(pred[0]) == Reset
+                        and np.all(pred[0].value == 0)
+                    )
+                    or (
+                        len(pred) == 0 and all_zero(src) and len(updates[src.base]) == 0
+                    )
+                    and not src.trainable
+                )
+                if zero_input:
+                    if len(op.sets) > 0:
+                        new_operators.append(Reset(op.sets[0]))
+                    break
+            else:
+                new_operators.append(op)
+        else:
+            new_operators.append(op)
+
+    return new_operators

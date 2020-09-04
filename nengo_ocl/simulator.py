@@ -51,7 +51,7 @@ from nengo_ocl.clra_nonlinearities import (
     plan_oja,
     plan_voja,
 )
-from nengo_ocl.operators import MultiDotInc
+from nengo_ocl.operators import MultiDotInc, remove_zero_incs
 from nengo_ocl.plan import BasePlan, PythonPlan, Plans
 from nengo_ocl.planners import greedy_planner
 from nengo_ocl.ast_conversion import OCL_Function
@@ -244,6 +244,9 @@ class Simulator(object):
         # --- operators
         with Timer() as planner_timer:
             operators = list(self.model.operators)
+
+            # get rid of zero dot incs
+            operators = remove_zero_incs(operators)
 
             # convert DotInc and Copy to MultiDotInc
             operators = list(map(MultiDotInc.convert_to, operators))
