@@ -29,6 +29,7 @@ try:
     from line_profiler import LineProfiler
 except ImportError:
     pass
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 import numpy as np
 import pyopencl as cl
@@ -38,8 +39,6 @@ from nengo.utils.numpy import scipy_sparse
 
 import nengo_ocl
 
-
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 if len(sys.argv) not in (3, 4):
     print(__doc__)

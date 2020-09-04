@@ -354,7 +354,9 @@ class Simulator(object):
         plans = []
         with Timer() as plans_timer:
             for op_type, op_list in op_groups:
-                plans.extend(self.plan_op_group(op_type, op_list))
+                with Timer() as individual_timer:
+                    plans.extend(self.plan_op_group(op_type, op_list))
+                logger.info("{:.3f} s : {}".format(individual_timer.duration, op_type.__name__))
             plans.extend(self.plan_probes())
 
         logger.info("Plans in %0.3f s" % plans_timer.duration)
