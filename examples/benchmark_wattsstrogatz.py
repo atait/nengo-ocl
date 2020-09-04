@@ -21,6 +21,10 @@ Example usage:
 
 from collections import OrderedDict
 import datetime
+try:
+    from line_profiler import LineProfiler
+except ImportError:
+    pass
 
 try:
     import cPickle as pickle
@@ -59,7 +63,7 @@ elif sys.argv[1] == "dl":
 
     sim_name = "dl" if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_dl.Simulator
-    sim_kwargs = dict()
+    sim_kwargs = dict(progress_bar=True)
 else:
     raise Exception("unknown sim", sys.argv[1])
 
@@ -102,6 +106,7 @@ for i, n_neurons in enumerate(ns_neurons):
 
     rng = np.random.RandomState(123)
     # a = rng.normal(scale=np.sqrt(1./dim), size=n_neurons)
+    # profiler = LineProfiler()
 
     # --- Model
     with nengo.Network(seed=9) as model:
@@ -127,6 +132,8 @@ for i, n_neurons in enumerate(ns_neurons):
 
         # -- build
         with sim_class(model, **sim_kwargs) as sim:
+            # profiler.add_function(sim._probe_outputs[E_p].step)
+            # profiler.enable_by_count()
             t_sim = time.time()
 
             # -- warmup
@@ -134,7 +141,11 @@ for i, n_neurons in enumerate(ns_neurons):
             t_warm = time.time()
 
             # -- long-term timing
-            sim.run(simtime)
+            if sys.argv[1] == "dl":
+                for _ in range(100):
+                    sim.run(simtime / 100)
+            else:
+                sim.run(simtime)
             t_run = time.time()
 
             if getattr(sim, "profiling", False):
@@ -158,6 +169,7 @@ for i, n_neurons in enumerate(ns_neurons):
         print(records[-1])
         print("%s, n_neurons=%d successful" % (sim_name, n_neurons))
         del model, sim
+        # profiler.print_stats()
     except Exception as e:
         records.append(
             OrderedDict(

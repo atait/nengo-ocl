@@ -12,7 +12,7 @@ by_name = OrderedDict()
 
 is_wattsstrogatz = None
 for recfile in sys.argv[1:]:
-    records = yaml.load(open(recfile, "rb"))
+    records = yaml.load(open(recfile, "r"), Loader=yaml.Loader)
     for rec in records:
         rec["filename"] = recfile
         by_name.setdefault(rec["name"], []).append(rec)
