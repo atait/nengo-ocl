@@ -46,9 +46,11 @@ for name, recs in nr:
     warmtimes = [rec["warmtime"] for rec in oks]
     runtimes = [rec["runtime"] for rec in oks]
     filenames = [rec["filename"] for rec in oks]
+    tottimes = [sum(a) for a in zip(buildtimes, warmtimes, runtimes)]
+    # runtimes = tottimes
     for dim, rt, fname in zip(dims, runtimes, filenames):
         print("  %4d, %8.3f, %s" % (dim, rt, fname))
-    plt.plot(dims, runtimes, ".-", markersize=30, label=name.strip())
+    plt.loglog(dims[1:], runtimes[1:], ".-", markersize=20, label=name.strip())
     # plt.semilogy(dims, runtimes, '.-', markersize=30, label=name.strip())
 
 plt.xlabel("n. dimensions convolved" if not is_wattsstrogatz else "n. neurons")
