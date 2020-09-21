@@ -172,7 +172,7 @@ class Simulator(object):
     def RaggedArray(self, listofarrays, **kwargs):
         return CLRaggedArray.from_arrays(self.queue, listofarrays, **kwargs)
 
-    def __init__(
+    def __init__(  # noqa: C901
         self,
         network,
         dt=0.001,
@@ -426,10 +426,9 @@ class Simulator(object):
         """(float) The current time of the simulator."""
         return self._time
 
-    @property
+    @property  # noqa: C901
     def signals(self):
-        """Get/set [properly-shaped] signal value (either 0d, 1d, or 2d)
-        """
+        """Get/set [properly-shaped] signal value (either 0d, 1d, or 2d)"""
 
         class Accessor(Mapping):
             def __iter__(_):
@@ -472,7 +471,22 @@ class Simulator(object):
         return Accessor()
 
     # --- Simulation functions (see ``nengo.Simulator`` for interface)
+    def clear_probes(self):
+        """Clear all probe histories.
+
+        .. versionadded:: 2.0.0
+        """
+        for probe in self.model.probes:
+            self._probe_outputs[probe] = []
+        self.data.reset()  # clear probe cache
+
     def close(self):
+        """Closes the simulator.
+
+        Any call to `.Simulator.run`, `.Simulator.run_steps`,
+        `.Simulator.step`, and `.Simulator.reset` on a closed simulator raises
+        a `nengo.exceptions.SimulatorClosed` exception.
+        """
         self.closed = True
         self.context = None
         self.queue = None
@@ -483,7 +497,7 @@ class Simulator(object):
         self._cl_probe_plan = None
 
     def _probe(self):
-        """Copy all probed signals to buffers"""
+        """Copy all probed signals to buffers."""
         self._probe_step_time()
 
         plan = self._cl_probe_plan
@@ -520,6 +534,14 @@ class Simulator(object):
         self._probe_step_time()
 
     def reset(self, seed=None):
+        """Reset the simulator state.
+
+        Parameters
+        ----------
+        seed : None
+            Not implemented. Changing the simulator seed during reset is not supported
+            by NengoOCL.
+        """
         if self.closed:
             raise SimulatorClosed("Cannot reset closed Simulator.")
 
@@ -556,14 +578,13 @@ class Simulator(object):
         ----------
         time_in_seconds : float
             Amount of time to run the simulation for. Must be positive.
-        progress_bar : bool or `.ProgressBar` or `.ProgressUpdater`, optional \
-                       (Default: True)
+        progress_bar : bool or `nengo.utils.progress.ProgressBar`, optional
             Progress bar for displaying the progress of the simulation run.
 
             If True, the default progress bar will be used.
             If False, the progress bar will be disabled.
-            For more control over the progress bar, pass in a `.ProgressBar`
-            or `.ProgressUpdater` instance.
+            For more control over the progress bar, pass in a
+            `nengo.utils.progress.ProgressBar` instance.
         """
         if time_in_seconds < 0:
             raise ValidationError(
@@ -586,7 +607,21 @@ class Simulator(object):
             )
             self.run_steps(steps, progress_bar=progress_bar)
 
-    def run_steps(self, steps, progress_bar=True):
+    def run_steps(self, steps, progress_bar=True):  # noqa: C901
+        """Simulate for the given number of ``dt`` steps.
+
+        Parameters
+        ----------
+        steps : int
+            Number of steps to run the simulation for.
+        progress_bar : bool or `nengo.utils.progress.ProgressBar`, optional
+            Progress bar for displaying the progress of the simulation run.
+
+            If True, the default progress bar will be used.
+            If False, the progress bar will be disabled.
+            For more control over the progress bar, pass in a
+            `nengo.utils.progress.ProgressBar` instance.
+        """
         if self.closed:
             raise SimulatorClosed("Simulator cannot run because it is closed.")
 
@@ -631,6 +666,7 @@ class Simulator(object):
             self.print_profiling()
 
     def step(self):
+        """Advance the simulator by 1 step (``dt`` seconds)."""
         return self.run_steps(1, progress_bar=False)
 
     def trange(self, sample_every=None, dt=None):
@@ -644,6 +680,9 @@ class Simulator(object):
         sample_every : float, optional
             The sampling period of the probe to create a range for.
             If None, a time value for every ``dt`` will be produced.
+
+            .. versionchanged:: 2.0.0
+               Renamed from dt to sample_every
         """
         if dt is not None:
             if sample_every is not None:
@@ -720,14 +759,14 @@ class Simulator(object):
             *args,
             beta=[op._float_beta for op in constant_bs],
             gamma=[op.gamma for op in constant_bs],
-            tag="c-beta-%d" % len(constant_bs)
+            tag="c-beta-%d" % len(constant_bs),
         )
         vector_b_gemvs = self._sig_gemv(
             vector_bs,
             *args,
             beta=lambda op: self._YYB_views[op][2],
             gamma=[op.gamma for op in vector_bs],
-            tag="v-beta-%d" % len(vector_bs)
+            tag="v-beta-%d" % len(vector_bs),
         )
         return constant_b_gemvs + vector_b_gemvs
 
@@ -1342,8 +1381,12 @@ class Simulator(object):
             if hasattr(plan, "description"):
                 print(indent(plan.description, 4))
 
-    def print_profiling(self, sort=None):
-        """
+    def print_profiling(self, sort=None):  # noqa: C901
+        """Print recorded profiling information in a sorted table.
+
+        To enable profiling, pass the ``profiling=True`` argument when creating
+        the ``Simulator``.
+
         Parameters
         ----------
         sort : column to sort by (negative number sorts ascending)
