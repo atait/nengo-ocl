@@ -7,6 +7,8 @@ copyright_start: 2013
 
 contributing_rst: {}
 
+license_rst: {}
+
 manifest_in:
   recursive-include:
     - examples *.py
@@ -14,3 +16,102 @@ manifest_in:
 pyproject_toml: {}
 
 pre_commit_config_yaml: {}
+
+docs_conf_py:
+  nengo_logo: nengo-ocl-full-light.svg
+  nengo_logo_color: "#69c530"
+  intersphinx_mapping:
+    pyopencl: https://documen.tician.de/pyopencl/
+    scipy: https://docs.scipy.org/doc/scipy/reference/
+  tagmanager_id: GTM-KWCR2HN
+
+setup_py:
+  url: https://labs.nengo.ai/nengo-ocl/
+  include_package_data: True
+  python_requires: ">=3.5"
+  install_req:
+    - nengo>=3.0.0,<3.1.0
+    - mako
+    - pyopencl
+  docs_req:
+    - matplotlib>=1.4
+    - nbsphinx
+    - nengo-sphinx-theme>=1.2.0
+    - numpydoc>=0.6.0
+    - sphinx>=1.8
+  tests_req:
+    - matplotlib>=1.4
+    - pytest>=3.6.0
+    - pytest-allclose>=1.0.0
+    - pytest-plt>=1.0.0
+    - pytest-rng>=1.0.0
+  entry_points:
+    nengo.backends:
+      - ocl = nengo_ocl:Simulator
+  classifiers:
+      - "Development Status :: 5 - Production/Stable"
+      - "Framework :: Nengo"
+      - "Intended Audience :: Science/Research"
+      - "License :: Free for non-commercial use"
+      - "Operating System :: OS Independent"
+      - "Programming Language :: Python"
+      - "Programming Language :: Python :: 3.5"
+      - "Programming Language :: Python :: 3.6"
+      - "Programming Language :: Python :: 3.7"
+      - "Topic :: Scientific/Engineering"
+      - "Topic :: Scientific/Engineering :: Artificial Intelligence"
+
+setup_cfg:
+  pytest:
+    markers:
+      example: Mark a test as an example.
+      slow: Mark a test as slow to skip it per default.
+    norecursedirs:
+      - plots
+    nengo_simloader: nengo_ocl.tests.make_test_sim
+    nengo_test_unsupported:
+      tests/test_cache.py::test_cache_concurrency:
+        Starting multiple simulators not supported
+      tests/test_connection.py::test_list_indexing*:
+        Advanced indexing with repeated indices not implemented
+      tests/test_connection.py::test_neuron_advanced_indexing:
+        Advanced indexing with repeated indices not implemented
+      tests/test_copy.py::test_pickle_sim*:
+        Pickling simulator not implemented
+      tests/test_neurons.py::test_izhikevich:
+        Izhikevich neurons not implemented
+      tests/test_neurons.py::test_lif_min_voltage*:
+        Min voltage not implemented
+      tests/test_node.py::test_none:
+        No error if nodes output None
+      tests/test_node.py::test_invalid_values*:
+        No error for invalid node values
+      tests/test_neurons.py::test_direct_mode_nonfinite_value:
+        No error for non-finite values
+      tests/test_processes.py::test_brownnoise:
+        Filtered noise processes not yet implemented
+      tests/test_ensemble.py::test_noise_copies_ok*:
+        Filtered noise processes not yet implemented
+      tests/test_processes.py::TestPiecewise*test_interpolation_?d:
+        float32 rounding issues
+      tests/test_synapses.py::test_triangle:
+        Only linear filters implemented
+      tests/test_learning_rules.py::test_custom_type:
+        Copying 2-D arrays not implemented
+      tests/test_simulator.py::test_dtype[16]:
+        Only float32 dtype supported
+      tests/test_simulator.py::test_dtype[64]:
+        Only float32 dtype supported
+      tests/test_simulator.py::test_entry_point:
+        Overridden so we can pass custom test simulators, see
+        tests/test_nengo_tests.py::test_entry_point
+      tests/test_simulator.py::test_probe_cache:
+        Changing simulator seed not implemented
+      tests/test_transforms.py::test_sparse[False-*:
+        Sparse transforms only implemented with Scipy
+      tests/test_builder.py::test_commonsig_readonly:
+        Specific to nengo.Simulator
+    allclose_tolerances:
+      # tol for synapses is high b/c Nengo uses SS and we use num/den
+      - tests/test_synapses.py::test_* atol=1e-5
+      - tests/test_transforms.py::test_convolution[* atol=1e-5
