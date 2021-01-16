@@ -78,8 +78,8 @@ ns_neurons = map(int, sys.argv[2].split(","))
 # ns_neurons = 10 * list(ns_neurons)  # repeat to build statistics on short simulations
 
 ### User options ###
-simtime = .2
-fan_outs = 16
+simtime = 1
+fan_outs = 130
 rewire_frac = 0.2
 directed = True
 n_prealloc_probes = 64  # this applies to OCL and DL
@@ -192,6 +192,7 @@ for i, n_neurons in enumerate(ns_neurons):
                 )
             )
         )
+        print('GSOP/s', (n_neurons * fan_outs * simtime / sim.dt) / records[-1]['runtime'] / 1e9)
         print(records[-1])
         print("%s, n_neurons=%d successful" % (sim_name, n_neurons))
         if not sys.argv[1] == "crit":
