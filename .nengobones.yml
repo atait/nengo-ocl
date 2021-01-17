@@ -30,7 +30,7 @@ setup_py:
   include_package_data: True
   python_requires: ">=3.5"
   install_req:
-    - nengo>=3.0.0,<3.1.0
+    - nengo>=3.1.0
     - mako
     - pyopencl
   docs_req:
@@ -63,12 +63,16 @@ setup_py:
 
 setup_cfg:
   pytest:
-    markers:
-      example: Mark a test as an example.
-      slow: Mark a test as slow to skip it per default.
     norecursedirs:
       - plots
     nengo_simloader: nengo_ocl.tests.make_test_sim
+    nengo_neurons:
+      - nengo.Direct
+      - nengo.LIF
+      - nengo.LIFRate
+      - nengo.RectifiedLinear
+      - nengo.Sigmoid
+      - nengo.SpikingRectifiedLinear
     nengo_test_unsupported:
       tests/test_cache.py::test_cache_concurrency:
         Starting multiple simulators not supported
@@ -98,6 +102,8 @@ setup_cfg:
         Only linear filters implemented
       tests/test_learning_rules.py::test_custom_type:
         Copying 2-D arrays not implemented
+      tests/test_learning_rules.py::test_rls_*:
+        RLS learning rule not yet implemented
       tests/test_simulator.py::test_dtype[16]:
         Only float32 dtype supported
       tests/test_simulator.py::test_dtype[64]:
@@ -107,6 +113,8 @@ setup_cfg:
         tests/test_nengo_tests.py::test_entry_point
       tests/test_simulator.py::test_probe_cache:
         Changing simulator seed not implemented
+      tests/test_solvers.py::test_all_negative_activities[*:
+        Tanh neuron not implemented
       tests/test_transforms.py::test_sparse[False-*:
         Sparse transforms only implemented with Scipy
       tests/test_builder.py::test_commonsig_readonly:

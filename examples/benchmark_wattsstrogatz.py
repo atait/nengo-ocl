@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""usage: python benchmark_circonv.py (ref|ocl) d1,... [name]
+"""usage: python benchmark_wattsstrogatz.py (ref|ocl) n1,... [name]
 
 (ref|ocl|dl)
   Passing 'ref' will use the reference simulator, `nengo.Simulator`,
   while passing 'ocl' will use `nengo_ocl.Simulator`.
 
-d1,...
-  A comma separated list of integers referring to
-  the number of dimensions in the vectors being convolved in the benchmark.
+n1,...
+  A comma separated list of integers referring to the number of neurons
+  in the Ensemble being recurrently connected in the benchmark.
   A typical value would be 16,32,64,128,256,512.
 
 name
@@ -16,7 +16,7 @@ name
   If not given, one will be automatically generated for you.
 
 Example usage:
-  python benchmark_wattsstrogatz.py ref 2,4,6 "Reference simulator"
+  python benchmark_wattsstrogatz.py ref 128,256,512 "Reference simulator"
 """
 
 from collections import OrderedDict
@@ -26,10 +26,6 @@ try:
 except ImportError:
     pass
 
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
 import sys
 import time
 import yaml
@@ -42,9 +38,21 @@ from nengo.utils.numpy import scipy_sparse
 
 import nengo_ocl
 
+### User options ###
+simtime = 1.0
+fan_outs = 8
+rewire_frac = 0.2
+directed = True
+n_prealloc_probes = 32  # this applies to OCL and DL
+sparse = True  # setting to False will probably overwhelm your GPU memory
+
+### Command line options ###
 if len(sys.argv) not in (3, 4):
     print(__doc__)
     sys.exit()
+
+max_steps = None
+sim_config = {}
 
 if sys.argv[1] == "ref":
     sim_name = "ref" if len(sys.argv) == 3 else sys.argv[3]
@@ -57,24 +65,21 @@ elif sys.argv[1].startswith("ocl"):
     ctx = cl.create_some_context()
     sim_name = ctx.devices[0].name if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_ocl.Simulator
-    sim_kwargs = dict(context=ctx, profiling=profiling)
+    sim_kwargs = dict(
+        context=ctx, profiling=profiling, n_prealloc_probes=n_prealloc_probes
+    )
 elif sys.argv[1] == "dl":
     import nengo_dl
 
     sim_name = "dl" if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_dl.Simulator
     sim_kwargs = dict(progress_bar=True)
+    max_steps = n_prealloc_probes
+    sim_config["dl_inference_only"] = True
 else:
     raise Exception("unknown sim", sys.argv[1])
 
 ns_neurons = map(int, sys.argv[2].split(","))
-
-### User options ###
-simtime = 1.0
-fan_outs = 8
-rewire_frac = 0.2
-directed = True
-sparse = True  # setting to False will probably overwhelm your GPU memory
 
 
 def wattsstrogatz_adjacencies(
@@ -110,8 +115,9 @@ for i, n_neurons in enumerate(ns_neurons):
 
     # --- Model
     with nengo.Network(seed=9) as model:
-        if sys.argv[1] == "dl":
+        if sim_config.get("dl_inference_only", False):
             nengo_dl.configure_settings(inference_only=True)
+
         # inputA = nengo.Node(a)
         ens = nengo.Ensemble(n_neurons, 1)
         # nengo.Connection(inputA, ens.neurons, synapse=0.03)
@@ -141,11 +147,15 @@ for i, n_neurons in enumerate(ns_neurons):
             t_warm = time.time()
 
             # -- long-term timing
-            if sys.argv[1] == "dl":
-                for _ in range(100):
-                    sim.run(simtime / 100)
-            else:
+            if max_steps is None:
                 sim.run(simtime)
+            else:
+                n_steps = int(np.round(simtime / sim.dt))
+                while n_steps > 0:
+                    steps = min(n_steps, max_steps)
+                    sim.run_steps(steps)
+                    n_steps -= steps
+
             t_run = time.time()
 
             if getattr(sim, "profiling", False):
@@ -156,7 +166,7 @@ for i, n_neurons in enumerate(ns_neurons):
                 (
                     ("benchmark", "watts-strogatz"),
                     ("name", sim_name),
-                    ("n_neurons", n_neurons),
+                    ("neurons", n_neurons),
                     ("simtime", simtime),
                     ("status", "ok"),
                     ("profiling", getattr(sim, "profiling", 0)),
