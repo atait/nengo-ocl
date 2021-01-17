@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""usage: python benchmark_circonv.py (ref|ocl) d1,... [name]
+"""usage: python benchmark_wattsstrogatz.py (ref|ocl) n1,... [name]
 
 (ref|ocl|dl)
   Passing 'ref' will use the reference simulator, `nengo.Simulator`,
   while passing 'ocl' will use `nengo_ocl.Simulator`.
 
-d1,...
-  A comma separated list of integers referring to
-  the number of dimensions in the vectors being convolved in the benchmark.
+n1,...
+  A comma separated list of integers referring to the number of neurons
+  in the Ensemble being recurrently connected in the benchmark.
   A typical value would be 16,32,64,128,256,512.
 
 name
@@ -16,22 +16,19 @@ name
   If not given, one will be automatically generated for you.
 
 Example usage:
-  python benchmark_wattsstrogatz.py ref 2,4,6 "Reference simulator"
+  python benchmark_wattsstrogatz.py ref 128,256,512 "Reference simulator"
 """
 
 from collections import OrderedDict
 import datetime
-import logging
-import sys
-import time
-import yaml
-import math
-
 try:
     from line_profiler import LineProfiler
 except ImportError:
     pass
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
+import sys
+import time
+import yaml
 
 import numpy as np
 import pyopencl as cl
@@ -41,10 +38,21 @@ from nengo.utils.numpy import scipy_sparse
 
 import nengo_ocl
 
+### User options ###
+simtime = 1.0
+fan_outs = 8
+rewire_frac = 0.2
+directed = True
+n_prealloc_probes = 32  # this applies to OCL and DL
+sparse = True  # setting to False will probably overwhelm your GPU memory
 
-if len(sys.argv) not in (3, 4, 5):
+### Command line options ###
+if len(sys.argv) not in (3, 4):
     print(__doc__)
     sys.exit()
+
+max_steps = None
+sim_config = {}
 
 if sys.argv[1] == "ref":
     sim_name = "ref" if len(sys.argv) == 3 else sys.argv[3]
@@ -57,33 +65,21 @@ elif sys.argv[1].startswith("ocl"):
     ctx = cl.create_some_context()
     sim_name = ctx.devices[0].name if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_ocl.Simulator
-    sim_kwargs = dict(context=ctx, profiling=profiling, progress_bar=False, n_prealloc_probes=4)
+    sim_kwargs = dict(
+        context=ctx, profiling=profiling, n_prealloc_probes=n_prealloc_probes
+    )
 elif sys.argv[1] == "dl":
     import nengo_dl
 
     sim_name = "dl" if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_dl.Simulator
     sim_kwargs = dict(progress_bar=True)
-elif sys.argv[1] == "crit":
-    sys.path.append('/home/atait/Documents/git-research/criticu')
-    import pycriticu.simulator as critsim
-
-    sim_name = "crit" if len(sys.argv) == 3 else sys.argv[3]
-    sim_class = critsim
-    sim_kwargs = dict(progress_bar=True)
+    max_steps = n_prealloc_probes
+    sim_config["dl_inference_only"] = True
 else:
     raise Exception("unknown sim", sys.argv[1])
 
 ns_neurons = map(int, sys.argv[2].split(","))
-# ns_neurons = 10 * list(ns_neurons)  # repeat to build statistics on short simulations
-
-### User options ###
-simtime = 1
-fan_outs = 130
-rewire_frac = 0.2
-directed = True
-n_prealloc_probes = 64  # this applies to OCL and DL
-sparse = True  # setting to False will probably overwhelm your GPU memory
 
 
 def wattsstrogatz_adjacencies(
@@ -112,91 +108,77 @@ def wattsstrogatz_adjacencies(
 records = []
 
 for i, n_neurons in enumerate(ns_neurons):
-    n_steps = math.ceil(simtime / .001)
 
     rng = np.random.RandomState(123)
     # a = rng.normal(scale=np.sqrt(1./dim), size=n_neurons)
     # profiler = LineProfiler()
-    if sys.argv[1].startswith('ocl'):
-        sim_kwargs['n_prealloc_probes'] = n_prealloc_probes
 
     # --- Model
-    try:
-        if not sys.argv[1] == "crit":
-            with nengo.Network(seed=9) as model:
-                if sys.argv[1] == "dl":
-                    nengo_dl.configure_settings(inference_only=True)
-                # inputA = nengo.Node(a)
-                ens = nengo.Ensemble(n_neurons, 1)
-                # nengo.Connection(inputA, ens.neurons, synapse=0.03)
+    with nengo.Network(seed=9) as model:
+        if sim_config.get("dl_inference_only", False):
+            nengo_dl.configure_settings(inference_only=True)
 
-                weimat = wattsstrogatz_adjacencies(n_neurons)
-                if sparse:
-                    transform = nengo.transforms.Sparse((n_neurons, n_neurons), init=weimat)
-                else:
-                    transform = weimat.toarray()
-                nengo.Connection(ens.neurons, ens.neurons, transform=transform, synapse=0.1)
+        # inputA = nengo.Node(a)
+        ens = nengo.Ensemble(n_neurons, 1)
+        # nengo.Connection(inputA, ens.neurons, synapse=0.03)
 
-                # A_p = nengo.Probe(A.output, synapse=0.03)
-                E_p = nengo.Probe(ens.neurons, synapse=0.03)
+        weimat = wattsstrogatz_adjacencies(n_neurons)
+        if sparse:
+            transform = nengo.transforms.Sparse((n_neurons, n_neurons), init=weimat)
         else:
-            weimat = wattsstrogatz_adjacencies(n_neurons)
-            critsim.specify_ws(weimat, biases=np.zeros((n_steps, n_neurons), dtype=np.float32))
-            critsim.setup(use_numba_kernel=True, use_cuSPARSE=False)
+            transform = weimat.toarray()
+        nengo.Connection(ens.neurons, ens.neurons, transform=transform, synapse=0.1)
 
-        # --- Simulation
+        # A_p = nengo.Probe(A.output, synapse=0.03)
+        E_p = nengo.Probe(ens.neurons, synapse=0.03)
+
+    # --- Simulation
+    try:
         t_start = time.time()
 
-        if not sys.argv[1] == "crit":
-            # -- build
-            with sim_class(model, **sim_kwargs) as sim:
-                # profiler.add_function(sim._probe_outputs[E_p].step)
-                # profiler.enable_by_count()
-                t_sim = time.time()
-
-                # -- warmup
-                sim.run(0.01)
-                t_warm = time.time()
-
-                # -- long-term timing
-                if sys.argv[1] == "dl":
-                    for _ in range(n_steps // n_prealloc_probes):
-                        sim.run_steps(n_prealloc_probes)
-                    if n_steps % n_prealloc_probes > 0:
-                        sim.run_steps(n_steps % n_prealloc_probes)
-                else:
-                    sim.run(simtime)
-                t_run = time.time()
-
-                if getattr(sim, "profiling", False):
-                    sim.print_profiling(sort=1)
-        else:
+        # -- build
+        with sim_class(model, **sim_kwargs) as sim:
+            # profiler.add_function(sim._probe_outputs[E_p].step)
+            # profiler.enable_by_count()
             t_sim = time.time()
-            critsim.run(1)
+
+            # -- warmup
+            sim.run(0.01)
             t_warm = time.time()
-            critsim.run(n_steps)
+
+            # -- long-term timing
+            if max_steps is None:
+                sim.run(simtime)
+            else:
+                n_steps = int(np.round(simtime / sim.dt))
+                while n_steps > 0:
+                    steps = min(n_steps, max_steps)
+                    sim.run_steps(steps)
+                    n_steps -= steps
+
             t_run = time.time()
+
+            if getattr(sim, "profiling", False):
+                sim.print_profiling(sort=1)
+
         records.append(
             OrderedDict(
                 (
                     ("benchmark", "watts-strogatz"),
                     ("name", sim_name),
-                    ("n_neurons", n_neurons),
-                    ("fan_outs", fan_outs),
+                    ("neurons", n_neurons),
                     ("simtime", simtime),
                     ("status", "ok"),
-                    # ("profiling", getattr(sim, "profiling", 0)),
+                    ("profiling", getattr(sim, "profiling", 0)),
                     ("buildtime", t_sim - t_start),
                     ("warmtime", t_warm - t_sim),
                     ("runtime", t_run - t_warm),
                 )
             )
         )
-        print('GSOP/s', (n_neurons * fan_outs * simtime / sim.dt) / records[-1]['runtime'] / 1e9)
         print(records[-1])
         print("%s, n_neurons=%d successful" % (sim_name, n_neurons))
-        if not sys.argv[1] == "crit":
-            del model, sim
+        del model, sim
         # profiler.print_stats()
     except Exception as e:
         records.append(
@@ -208,21 +190,15 @@ for i, n_neurons in enumerate(ns_neurons):
                     ("simtime", simtime),
                     ("status", "exception"),
                     ("exception", str(e)),
-                    ("buildtime", t_sim - t_start),
-                    ("warmtime", t_warm - t_sim),
-                    ("runtime", t_run - t_warm),
                 )
             )
         )
         print(records[-1])
         print("%s, n_neurons=%d exception" % (sim_name, n_neurons))
-        # raise
+        raise
 
-if len(sys.argv) > 4:
-    filename = sys.argv[4]
-else:
-    filename = "records_wattsstrogatz_%s.yml" % (
-        (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-    )
+filename = "records_wattsstrogatz_%s.yml" % (
+    (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+)
 with open(filename, "w") as fh:
     yaml.dump(records, fh)

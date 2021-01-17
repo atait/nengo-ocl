@@ -1,26 +1,28 @@
+# pylint: disable=missing-module-docstring,missing-function-docstring
+
 import logging
+
+import nengo
 import numpy as np
 import pyopencl as cl
 import pytest
-
-import nengo
-from nengo.utils.stdlib import Timer
 from nengo.utils.filter_design import ss2tf
+from nengo.utils.stdlib import Timer
 
 import nengo_ocl
 from nengo_ocl import raggedarray as ra
-from nengo_ocl.raggedarray import RaggedArray
-from nengo_ocl.clraggedarray import CLRaggedArray as CLRA, to_device
-
 from nengo_ocl.clra_nonlinearities import (
+    plan_copy,
+    plan_elementwise_inc,
     plan_lif,
     plan_lif_rate,
-    plan_reset,
-    plan_copy,
-    plan_slicedcopy,
-    plan_elementwise_inc,
     plan_linearfilter,
+    plan_reset,
+    plan_slicedcopy,
 )
+from nengo_ocl.clraggedarray import CLRaggedArray as CLRA
+from nengo_ocl.clraggedarray import to_device
+from nengo_ocl.raggedarray import RaggedArray
 
 logger = logging.getLogger(__name__)
 RA = lambda arrays, dtype=np.float32: RaggedArray(arrays, dtype=dtype)
@@ -57,32 +59,32 @@ def test_lif_step(ctx, upsample):
     nls = [nengo.LIF(tau_ref=ref, tau_rc=taus[i]) for i, n in enumerate(n_neurons)]
     for i, nl in enumerate(nls):
         if upsample <= 1:
-            nl.step_math(dt, J[i], OS[i], V[i], W[i])
+            nl.step(dt, J[i], OS[i], voltage=V[i], refractory_time=W[i])
         else:
             s = np.zeros_like(OS[i])
             for j in range(upsample):
-                nl.step_math(dt / upsample, J[i], s, V[i], W[i])
+                nl.step(dt / upsample, J[i], s, voltage=V[i], refractory_time=W[i])
                 OS[i] = (1.0 / dt) * ((OS[i] > 0) | (s > 0))
 
     # simulate device
     plan = plan_lif(queue, dt, clJ, clV, clW, clOS, ref, clTaus, amp, upsample=upsample)
     plan()
 
-    if 1:
-        a, b = V, clV
-        for i in range(len(a)):
-            nc, _ = not_close(a[i], b[i]).nonzero()
-            if len(nc) > 0:
-                j = nc[0]
-                print("i", i, "j", j)
-                print("J", J[i][j], clJ[i][j])
-                print("V", V[i][j], clV[i][j])
-                print("W", W[i][j], clW[i][j])
-                print("...", len(nc) - 1, "more")
+    # print not close values
+    a, b = V, clV
+    for i, _ in enumerate(a):
+        nc, _ = not_close(a[i], b[i]).nonzero()
+        if len(nc) > 0:
+            j = nc[0]
+            print("i", i, "j", j)
+            print("J", J[i][j], clJ[i][j])
+            print("V", V[i][j], clV[i][j])
+            print("W", W[i][j], clW[i][j])
+            print("...", len(nc) - 1, "more")
 
     n_spikes = np.sum([np.sum(os) for os in OS])
     if n_spikes < 1.0:
-        logger.warn("LIF spiking mechanism was not tested!")
+        logger.warning("LIF spiking mechanism was not tested!")
     assert ra.allclose(J, clJ.to_host())
     assert ra.allclose(V, clV.to_host())
     assert ra.allclose(W, clW.to_host())
@@ -130,7 +132,7 @@ def test_lif_speed(ctx, rng, heterogeneous):
         )
 
         with Timer() as timer:
-            for j in range(n_iters):
+            for _ in range(n_iters):
                 plan()
 
         print("plan %d: blockify = %s, dur = %0.3f" % (i, blockify, timer.duration))
@@ -158,7 +160,7 @@ def test_lif_rate(ctx, blockify):
     # simulate host
     nls = [nengo.LIFRate(tau_ref=ref, tau_rc=taus[i]) for i, n in enumerate(n_neurons)]
     for i, nl in enumerate(nls):
-        nl.step_math(dt, J[i], R[i])
+        nl.step(dt, J[i], R[i])
 
     # simulate device
     plan = plan_lif_rate(queue, dt, clJ, clR, ref, clTaus, amp, blockify=blockify)
@@ -166,7 +168,7 @@ def test_lif_rate(ctx, blockify):
 
     rate_sum = np.sum([np.sum(r) for r in R])
     if rate_sum < 1.0:
-        logger.warn("LIF rate was not tested above the firing threshold!")
+        logger.warning("LIF rate was not tested above the firing threshold!")
     assert ra.allclose(J, clJ.to_host())
     assert ra.allclose(R, clR.to_host())
 
@@ -385,7 +387,8 @@ def test_linearfilter(ctx, n_per_kind, rng):
     plans = plan_linearfilter(queue, clX, clY, clA, clB, clXbuf, clYbuf)
     with Timer() as timer:
         for _ in range(n_calls):
-            [plan() for plan in plans]
+            for plan in plans:
+                plan()
 
     print(timer.duration)
 

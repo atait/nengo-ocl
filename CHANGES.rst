@@ -19,11 +19,36 @@ Release History
    - Removed
    - Fixed
 
-2.0.1 (unreleased)
+2.1.1 (unreleased)
 ==================
+
+
+2.1.0 (Nov 23, 2020)
+====================
+
+*Compatible with Nengo 3.1.0*
+
+**Added**
+
+- Added ``remove_zero_incs`` and ``remove_unmodified_resets`` simplifications for
+  the operator list. These are enabled by default, and remove unnecessary operators
+  (e.g. that are multiplying by zero and adding that to a signal). This increases both
+  build speed and run speed. These simplifications can be disabled by modifying
+  ``nengo_ocl.operators.simplifications``. (`#183`_)
+
+**Changed**
+
+- Added support for Nengo 3.1.0, and retired support for Nengo 3.0.0. (`#180`_)
+- Changes to improve benchmarks, including comparing between benchmarks. (`#182`_)
+
+.. _#180: https://github.com/nengo-labs/nengo-ocl/pull/180
+.. _#182: https://github.com/nengo-labs/nengo-ocl/pull/182
+.. _#183: https://github.com/nengo-labs/nengo-ocl/pull/183
 
 2.0.0 (Sept 4, 2020)
 ====================
+
+*Compatible with Nengo 3.0.0*
 
 **Added**
 

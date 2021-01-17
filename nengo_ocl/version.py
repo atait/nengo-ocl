@@ -8,7 +8,7 @@ a release version. Release versions are git tagged with the version.
 
 # --- version of this release
 name = "nengo_ocl"
-version_info = (2, 0, 1)  # (major, minor, patch)
+version_info = (2, 1, 1)  # (major, minor, patch)
 dev = 0
 version = "{v}{dev}".format(
     v=".".join(str(v) for v in version_info),
@@ -31,8 +31,9 @@ bad_nengo_versions = [
     (2, 6, 0),
     (2, 7, 0),
     (2, 8, 0),
+    (3, 0, 0),
 ]
 
 # --- latest Nengo version at time of release
-latest_nengo_version_info = (3, 0, 0)  # (major, minor, patch)
+latest_nengo_version_info = (3, 1, 0)  # (major, minor, patch)
 latest_nengo_version = ".".join(str(v) for v in latest_nengo_version_info)

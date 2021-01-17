@@ -47,4 +47,5 @@ nosetests.xml
 # project-specific
 *.plots
 *.pkl
+examples/*.png
 *.yml

@@ -1,7 +1,8 @@
-import numpy as np
-import pytest
+# pylint: disable=missing-module-docstring,missing-function-docstring
 
 import nengo
+import numpy as np
+import pytest
 from nengo.builder import Model
 from nengo.builder.operator import DotInc, Reset
 from nengo.builder.signal import Signal
@@ -61,7 +62,7 @@ def test_warn_on_future_version(monkeypatch):
 def test_reset():
     seed = 3
 
-    class CustomProcess(nengo.Process):
+    class CustomProcess(nengo.Process):  # pylint: disable=missing-class-docstring
         def make_state(self, shape_in, shape_out, dt, dtype=None):
             return {}
 

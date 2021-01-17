@@ -1,27 +1,14 @@
+# pylint: disable=missing-module-docstring,missing-function-docstring
+# pylint: disable=wrong-import-position
+
 import logging
 
 import numpy as np
 import pyopencl as cl
 
-# --- monkey-patch Signal.may_share_memory
-# TODO: remove this monkeypatch once there is a fix in nengo core
-import nengo.builder.signal
-
-old_may_share_memory = nengo.builder.signal.Signal.may_share_memory
-
-
-def may_share_memory(self, other):
-    if self is other:
-        return True
-
-    return old_may_share_memory(self, other)
-
-
-nengo.builder.signal.Signal.may_share_memory = may_share_memory
-
 # --- imports from this package
-from .version import version as __version__
 from .simulator import Simulator
+from .version import version as __version__
 
 numpy_relaxed_strides = np.ones((2, 1), order="C").flags.f_contiguous
 pyopencl_relaxed_strides = hasattr(cl.compyte.array, "equal_strides")

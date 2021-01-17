@@ -1,13 +1,19 @@
+"""OpenCL kernels for everything other than GEMV."""
+
+# pylint: disable=missing-class-docstring,missing-function-docstring
+
 from collections import OrderedDict
 
+import nengo.dists as nengod
 import numpy as np
 import pyopencl as cl
 from mako.template import Template
-import nengo.dists as nengod
 from nengo.utils.numpy import is_number
-from nengo_ocl.raggedarray import RaggedArray
+
+from nengo_ocl import ast_conversion
 from nengo_ocl.clraggedarray import CLRaggedArray, to_device
 from nengo_ocl.plan import Plan
+from nengo_ocl.raggedarray import RaggedArray
 from nengo_ocl.utils import as_ascii, indent, nonelist, round_up
 
 
@@ -813,11 +819,9 @@ def plan_probes(queue, periods, X, Y, tag=None):
 
     # N.B.  X[i].shape = (M, N)
     #       Y[i].shape = (buf_len, M * N)
-    for arr in [X, Y]:
-        assert (arr.stride1s == 1).all()
     assert (X.shape0s * X.shape1s == Y.shape1s).all()
-    assert (X.stride0s == X.shape1s).all()
-    assert (X.stride1s == 1).all()
+
+    # Y must be contiguous
     assert (Y.stride0s == Y.shape1s).all()
     assert (Y.stride1s == 1).all()
 
@@ -835,6 +839,8 @@ def plan_probes(queue, periods, X, Y, tag=None):
             __global const int *Xstarts,
             __global const int *Xshape0s,
             __global const int *Xshape1s,
+            __global const int *Xstride0s,
+            __global const int *Xstride1s,
             __global const ${Xtype} *Xdata,
             __global const int *Ystarts,
             __global ${Ytype} *Ydata
@@ -844,17 +850,37 @@ def plan_probes(queue, periods, X, Y, tag=None):
             const ${Ctype} countdown = countdowns[n];
 
             if (countdown <= 0) {
-                const int n_dims = Xshape0s[n] * Xshape1s[n];
+                const int ni = Xshape0s[n];
+                const int nj = Xshape1s[n];
+                const int n_dims = ni * nj;
+    % if has_stride_i:
+                const int sti = Xstride0s[n];
+    % else:
+                const int sti = 1;
+    % endif
+    % if has_stride_j:
+                const int stj = Xstride1s[n];
+    % else:
+                const int stj = 1;
+    % endif
                 __global const ${Xtype} *x = Xdata + Xstarts[n];
                 const int bufpos = bufpositions[n];
 
                 __global ${Ytype} *y = Ydata + Ystarts[n] + bufpos * n_dims;
 
-                for (int ii = get_global_id(0);
-                         ii < n_dims;
-                         ii += get_global_size(0))
-                {
-                    y[ii] = x[ii];
+                const int gsize0 = get_global_size(0);
+                if (ni == 1) {
+                    for (int j = get_global_id(0); j < n_dims; j += gsize0)
+                        y[j] = x[j * stj];
+                } else if (nj == 1) {
+                    for (int i = get_global_id(0); i < n_dims; i += gsize0)
+                        y[i] = x[i * sti];
+                } else {
+                    for (int ij = get_global_id(0); ij < n_dims; ij += gsize0) {
+                        const int i = ij / nj;
+                        const int j = ij % nj;
+                        y[ij] = x[i*sti + j*stj];
+                    }
                 }
                 // This should *not* cause deadlock because
                 // all local threads guaranteed to be
@@ -883,6 +909,8 @@ def plan_probes(queue, periods, X, Y, tag=None):
         Ytype=Y.ctype,
         Ctype=cl_countdowns.ctype,
         Ptype=cl_periods.ctype,
+        has_stride_i=(X.stride0s != 1).any(),
+        has_stride_j=(X.stride1s != 1).any(),
     )
     text = as_ascii(Template(text, output_encoding="ascii").render(**textconf))
 
@@ -893,6 +921,8 @@ def plan_probes(queue, periods, X, Y, tag=None):
         X.cl_starts,
         X.cl_shape0s,
         X.cl_shape1s,
+        X.cl_stride0s,
+        X.cl_stride1s,
         X.cl_buf,
         Y.cl_starts,
         Y.cl_buf,
@@ -924,8 +954,6 @@ def plan_probes(queue, periods, X, Y, tag=None):
 
 
 def plan_direct(queue, code, init, input_names, inputs, output, tag=None):
-    from . import ast_conversion
-
     assert len(input_names) == len(inputs)
 
     N = len(inputs[0])
@@ -1264,9 +1292,9 @@ def _plan_template(  # noqa: C901
     declares="",
     tag=None,
     blockify=True,
-    inputs={},
-    outputs={},
-    parameters={},
+    inputs=None,
+    outputs=None,
+    parameters=None,
 ):
     """Template for making a plan for vector nonlinearities.
 
@@ -1290,6 +1318,10 @@ def _plan_template(  # noqa: C901
         constant.
 
     """
+    inputs = {} if inputs is None else inputs
+    outputs = {} if outputs is None else outputs
+    parameters = {} if parameters is None else parameters
+
     input0 = list(inputs.values())[0]  # input to use as reference for lengths
 
     # split parameters into static and updated params
@@ -1470,7 +1502,7 @@ def init_rngs(queue, rngs, seeds):
     assert np.all(rngs.shape0s == rngs.shape0s[0])
     assert np.all(rngs.shape1s == 28)
 
-    global _init_rng_kernel
+    global _init_rng_kernel  # pylint: disable=global-statement
     if _init_rng_kernel is None:
         text = """
             #define RANLUXCL_LUX 2  // do not need highest quality
