@@ -62,11 +62,12 @@ for name, recs in by_name.items():
     for xx, rt, fname in zip(x, runtimes, filenames):
         print("  %4d, %8.3f, %s" % (xx, rt, fname))
 
-    plt.plot(x, runtimes, ".-", markersize=30, label=name.strip() + " run")
+    # plt.plot(x, runtimes, ".-", markersize=30, label=name.strip() + " run")
     # plt.plot(x, buildtimes, ".-", markersize=30, label=name.strip() + " build")
     # plt.plot(x, warmtimes, ".-", markersize=30, label=name.strip() + " warm")
-    # plt.plot(x, tottimes, ".-", markersize=30, label=name.strip() + " tot")
-    # plt.yscale("log")
+    plt.plot(x, tottimes, ".-", markersize=30, label=name.strip() + " tot")
+    plt.yscale("log")
+    plt.xscale("log")
 
 plt.xlabel("n. dimensions convolved" if x_units == "dim" else "n. neurons")
 plt.ylabel("simulation time (seconds)")
