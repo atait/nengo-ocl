@@ -28,7 +28,13 @@ for recfile, records in by_recfile.items():
         by_name.setdefault(name, []).append(rec)
 
         if x_units is None:
-            x_units = "dim" if "dim" in rec else "synapses" if "synapses" in rec else "neurons"
+            x_units = (
+                "dim"
+                if "dim" in rec
+                else "synapses"
+                if "synapses" in rec
+                else "neurons"
+            )
 
         if x_units not in rec:
             raise ValueError(

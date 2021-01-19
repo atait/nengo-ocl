@@ -62,7 +62,10 @@ elif sys.argv[1].startswith("ocl"):
     sim_name = ctx.devices[0].name if len(sys.argv) == 3 else sys.argv[3]
     sim_class = nengo_ocl.Simulator
     sim_kwargs = dict(
-        context=ctx, profiling=profiling, n_prealloc_probes=n_prealloc_probes, progress_bar=False
+        context=ctx,
+        profiling=profiling,
+        n_prealloc_probes=n_prealloc_probes,
+        progress_bar=False,
     )
 elif sys.argv[1] == "dl":
     import nengo_dl
@@ -114,7 +117,7 @@ for i, n_neurons in enumerate(ns_neurons):
             nengo_dl.configure_settings(inference_only=True)
 
         # inputA = nengo.Node(a)
-        neuron_type = nengo.neurons.LIF(tau_ref=.001)
+        neuron_type = nengo.neurons.LIF(tau_ref=0.001)
         ens = nengo.Ensemble(n_neurons, 1, neuron_type=neuron_type)
         # nengo.Connection(inputA, ens.neurons, synapse=0.03)
 
