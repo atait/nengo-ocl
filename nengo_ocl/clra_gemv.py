@@ -10,7 +10,7 @@ from mako.template import Template
 
 from nengo_ocl.clraggedarray import CLRaggedArray, to_device
 from nengo_ocl.plan import Plan
-from nengo_ocl.utils import as_ascii
+from nengo_ocl.utils import as_ascii, round_up
 from nengo.utils.numpy import scipy_sparse
 
 
@@ -1422,10 +1422,71 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
     }
     """
     kern_parallel = """
-    """
-    kern = kern_serial if serial_reduction else kern_parallel
+    __kernel void ellpack_inc(
+        __global const int *A_columns,
+        __global const ${dtype} *A_entries,
+        __global const int *Xstarts,
+        __global const ${dtype} *Xdata,
+        __global const int *Ystarts,
+        __global ${dtype} *Ydata
+    )
+    {
+        // n can later be used to keep track of multiple arrays
+        const int n = 0;
+        const int gid = get_global_id(0);
+        const int ineuron = get_group_id(0);
+        const int isynapse = get_local_id(0);
 
+        __global const ${dtype} *x = Xdata + Xstarts[n];
+        __global ${dtype} *y = Ydata + Ystarts[n];
+
+        __local ${dtype} products[${wg_size}];
+
+//        if (isynapse == 0) {
+//          y[ineuron] = gid;
+//        }
+
+        // Load into individual products
+        if (isynapse < ${max_fanout}) {
+            products[isynapse] = A_entries[ineuron * ${max_fanout} + isynapse] * x[A_columns[ineuron * ${max_fanout} + isynapse]];
+        } else {
+            products[isynapse] = 0;
+        }
+
+        // Do reduction across work group
+//        for (int offset = 1; offset < ${max_fanout}; offset *= 2) {
+//            int mask = 2 * offset - 1;
+//            barrier(CLK_LOCAL_MEM_FENCE);
+//            if (isynapse & mask == 0) {
+//                products[isynapse] += products[isynapse + offset];
+//            }
+//        }
+//        barrier(CLK_LOCAL_MEM_FENCE);
+//
+        // serial reduction, despite parallel local load and multiply
+        if (isynapse == 0) {
+            for (int k = 1; k < ${max_fanout}; k++) {
+                products[0] += products[k];
+            }
+        }
+
+        // Store value
+        if (isynapse == 0) {
+    %if inc:
+            y[ineuron] += products[0];
+    %else:
+            y[ineuron] = products[0];
+    %endif
+        }
+    }
+    """
     textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts)
+    kern = kern_serial if serial_reduction else kern_parallel
+    if not serial_reduction:
+        # wg_size = round_up(A_fanouts, 16)
+        wg_size = A_fanouts
+        textconf.update(wg_size=wg_size)
+
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
     full_args = (
         A_columns.base_data,
@@ -1439,8 +1500,14 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
     _fn.set_args(*full_args)
 
     # TODO
-    gsize = (Y.sizes[0], 1)
-    lsize = None
+    if serial_reduction:
+        gsize = (round_up(Y.sizes[0], 4), 1)
+        lsize = (4, 1)
+    else:
+        nneurons = Y.sizes[0]
+        gsize = (nneurons * textconf['wg_size'], 1)
+        lsize = (textconf['wg_size'], 1)
+    breakpoint()
 
     plan = Plan(queue, _fn, gsize, lsize=lsize, name="cl_ellpack", tag=tag)
     plan.full_args = full_args  # prevent garbage-collection

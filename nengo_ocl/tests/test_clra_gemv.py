@@ -370,7 +370,8 @@ def test_speed(ctx, rng):  # noqa: C901
 
 
 @pytest.mark.parametrize("inc", [False, True])
-def test_sparse(ctx, inc, rng, allclose):
+@pytest.mark.parametrize("ell_vs_csr", [False, True])
+def test_sparse(ctx, inc, ell_vs_csr, rng, allclose):
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
     # -- prepare initial conditions on host
@@ -386,7 +387,7 @@ def test_sparse(ctx, inc, rng, allclose):
         Y = RA([np.arange(1, shape[0] + 1)])
     else:
         # random sparse matrix
-        shape = (500, 500)
+        shape = (2000, 2000)
         sparsity = 0.02
         mask = rng.uniform(size=shape) < sparsity
         ii, jj = mask.nonzero()
@@ -395,29 +396,30 @@ def test_sparse(ctx, inc, rng, allclose):
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
         X = RA([rng.uniform(-1, 1, size=shape[1])])
         Y = RA([rng.uniform(-1, 1, size=shape[0])])
-    Aell = scipy2ell(A)
-    A_fanouts = Aell.columns.shape[1]
 
     # -- prepare initial conditions on device
     queue = cl.CommandQueue(ctx)
-    # ELLPACK
-    A_columns = to_device(queue, Aell.columns.reshape(-1).astype(np.int32))
-    A_entries = to_device(queue, Aell.entries.reshape(-1).astype(np.float32))
-    # CSR
-    A_data = to_device(queue, A.data.astype(np.float32))
-    A_indices = to_device(queue, A.indices.astype(np.int32))
-    A_indptr = to_device(queue, A.indptr.astype(np.int32))
     clX = CLRA(queue, X)
     clY = CLRA(queue, Y)
     assert allclose(X, clX)
     assert allclose(Y, clY)
 
+    if ell_vs_csr:
+        Aell = scipy2ell(A)
+        A_fanouts = Aell.columns.shape[1]
+        A_columns = to_device(queue, Aell.columns.reshape(-1).astype(np.int32))
+        A_entries = to_device(queue, Aell.entries.reshape(-1).astype(np.float32))
+        plan = plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, clX, clY, inc=inc, serial_reduction=False)
+    else:
+        A_data = to_device(queue, A.data.astype(np.float32))
+        A_indices = to_device(queue, A.indices.astype(np.int32))
+        A_indptr = to_device(queue, A.indptr.astype(np.int32))
+        plan = plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, clX, clY, inc=inc)
+
     # -- run cl computation
-    # plan = plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, clX, clY, inc=inc)
-    plan = plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, clX, clY, inc=inc)
     plan()
 
     # -- ensure they match
     ref = (Y[0] if inc else 0) + A.dot(X[0])
     sim = clY[0]
-    assert allclose(ref, sim, atol=1e-7)
+    assert allclose(ref, sim, atol=1e-6)
