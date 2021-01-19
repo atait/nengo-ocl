@@ -40,7 +40,7 @@ if len(sys.argv) > 1 and sys.argv[1] == 'simulate':
         ### set backend-specific environment variables here
         os.environ['use_ellpack'] = '1' if simname.endswith('ell') else '0'
         ###
-        with open('benchmark_wattsstrogatz.py') as fx:
+        with open(benchmark_script) as fx:
             exec(fx.read())
 
 sys.argv = ['view_records.py'] + [name2file(simname) for _, simname in sims]

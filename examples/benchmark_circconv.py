@@ -155,7 +155,7 @@ for i, dim in enumerate(dims):
         print("%s, dims=%d exception" % (sim_name, dim))
         raise
 
-f len(sys.argv) > 4:
+if len(sys.argv) > 4:
     filename = sys.argv[4]
 else:
     filename = "records_circconv_%s.yml" % (
