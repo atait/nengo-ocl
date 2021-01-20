@@ -15,7 +15,7 @@ from nengo_ocl.clra_gemv import (
     plan_reduce_gemv,
     plan_sparse_dot_inc,
     plan_ellpack_inc,
-    scipy2ell,
+    plan_csr_inc
 )
 from nengo_ocl.clraggedarray import CLRaggedArray as CLRA
 from nengo_ocl.clraggedarray import to_device
@@ -34,6 +34,14 @@ def pytest_generate_tests(metafunc):
                 plan_many_dots_gemv,
                 plan_block_gemv,
                 plan_ragged_gather_gemv,
+            ],
+        )
+    if "sparse_planner" in metafunc.fixturenames:
+        metafunc.parametrize(
+            "sparse_planner",
+            [
+                plan_ellpack_inc,
+                plan_csr_inc,
             ],
         )
 
@@ -369,15 +377,17 @@ def test_speed(ctx, rng):  # noqa: C901
         print("clBLAS: %0.3f" % timer.duration)
 
 
-@pytest.mark.parametrize("inc", [False, True])
-@pytest.mark.parametrize("ell_vs_csr", [False, True])
-def test_sparse(ctx, inc, ell_vs_csr, rng, allclose):
+@pytest.mark.parametrize("inc", [False])
+@pytest.mark.parametrize("sparsity", [0.02, .2])
+@pytest.mark.parametrize("shape", [32, 64, 2000, 1999, (10, 5000), (5000, 10), (20, 30)])
+def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
     # -- prepare initial conditions on host
+    if isinstance(shape, int):
+        shape = (shape, shape)
     if 0:  # pylint: disable=using-constant-test
         # diagonal matrix
-        shape = (32, 32)
         s = min(shape[0], shape[1])
         data = list(range(s))
         ii = list(range(s))
@@ -385,17 +395,17 @@ def test_sparse(ctx, inc, ell_vs_csr, rng, allclose):
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
         X = RA([np.arange(1, shape[1] + 1)])
         Y = RA([np.arange(1, shape[0] + 1)])
-    else:
+    elif 1:
         # random sparse matrix
-        shape = (2000, 2000)
-        sparsity = 0.02
         mask = rng.uniform(size=shape) < sparsity
         ii, jj = mask.nonzero()
-        assert len(ii) > 0
+        assert len(ii) > 0, 'all elements zero. too sparse'  # Actually this should still work if all zeros
         data = rng.uniform(-1, 1, size=len(ii))
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
         X = RA([rng.uniform(-1, 1, size=shape[1])])
         Y = RA([rng.uniform(-1, 1, size=shape[0])])
+    else:
+        raise ValueError('Invalid spmv_type: {}'.format(spmv_type))
 
     # -- prepare initial conditions on device
     queue = cl.CommandQueue(ctx)
@@ -404,20 +414,13 @@ def test_sparse(ctx, inc, ell_vs_csr, rng, allclose):
     assert allclose(X, clX)
     assert allclose(Y, clY)
 
-    if ell_vs_csr:
-        Aell = scipy2ell(A)
-        A_fanouts = Aell.columns.shape[1]
-        A_columns = to_device(queue, Aell.columns.reshape(-1).astype(np.int32))
-        A_entries = to_device(queue, Aell.entries.reshape(-1).astype(np.float32))
-        plan = plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, clX, clY, inc=inc, serial_reduction=False)
-    else:
-        A_data = to_device(queue, A.data.astype(np.float32))
-        A_indices = to_device(queue, A.indices.astype(np.int32))
-        A_indptr = to_device(queue, A.indptr.astype(np.int32))
-        plan = plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, clX, clY, inc=inc)
+    prog = sparse_planner(queue, A, clX, clY, inc=inc)
 
     # -- run cl computation
-    plan()
+    plans = prog.plans
+    # assert len(plans) == 1
+    for plan in plans:
+        plan()
 
     # -- ensure they match
     ref = (Y[0] if inc else 0) + A.dot(X[0])

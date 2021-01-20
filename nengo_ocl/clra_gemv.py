@@ -1239,7 +1239,139 @@ class plan_ragged_gather_gemv(gemv_prog):
         return plans
 
 
-def plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None):
+# These specifications hold data and don't do anything
+ell_matdata = namedtuple('ell_matdata', ['columns', 'entries', 'rowlens', 'ellwidth', 'nnz', 'shape'])
+csr_matdata = namedtuple('csr_matdata', ['indices', 'indptr', 'data', 'nnz', 'shape'])
+
+
+class spmv_prog:
+    supported_algorithms = []
+
+    def __init__(
+        self, queue, A_host, X, Y, inc=False, algorithm=None, tag=None,
+    ):
+        self.queue = queue
+        self.A_host = A_host
+        self.X = X
+        self.Y = Y
+        self.inc = inc
+        self.tag = tag
+        if algorithm is None:
+            algorithm = self.supported_algorithms[0]
+        self.algorithm = algorithm.upper()
+        if self.algorithm not in self.supported_algorithms:
+            raise ValueError('Invalid SpMV algorithm for {}: {}. '
+                             'Supported are {}'.format(type(self), algorithm, self.supported_algorithms))
+
+        self.to_hostdata()
+        self.to_device()
+        self.plans = self.choose_plans()
+
+
+class plan_ellpack_inc(spmv_prog):
+    supported_algorithms = ['ELLPACK', 'ELLPACK-accumulate']
+
+    @staticmethod
+    def scipy2elldata(scipy_mat, force_nonempty=True):
+        ''' Works with scipy sparse or numpy dense argument '''
+        scipy_mat = scipy_mat.copy()
+        try:
+            lilmat = scipy_mat.tolil()
+        except AttributeError:
+            lilmat = scipy_sparse.lil_matrix(scipy_mat)
+        shape = scipy_mat.shape
+        rowlens = np.array([len(rowdata) for rowdata in lilmat.rows])
+        columns = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=np.int32)
+        entries = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=np.float32)
+        ellwidth = max(rowlens)
+        nnz = sum(rowlens)
+
+        for irow, rowlen in enumerate(rowlens):
+            columns[irow, :rowlen] = lilmat.rows[irow]
+            entries[irow, :rowlen] = lilmat.data[irow]
+
+        if force_nonempty and columns.size == 0:  # don't allow empty matrices
+            columns = np.zeros((shape[0], 1), dtype=columns.dtype)
+            entries = np.zeros((shape[0], 1), dtype=entries.dtype)
+            rowlens[0] = 1
+
+        return ell_matdata(columns, entries, rowlens, ellwidth, nnz, shape)
+
+    def to_hostdata(self):
+        self.A_hostdata = plan_ellpack_inc.scipy2elldata(self.A_host)
+
+    def to_device(self):
+        A_columns_host = self.A_hostdata.columns.reshape(-1)
+        A_entries_host = self.A_hostdata.entries.reshape(-1)
+        self.A_device = ell_matdata(
+            to_device(self.queue, A_columns_host),
+            to_device(self.queue, A_entries_host),
+            self.A_hostdata.rowlens,
+            self.A_hostdata.ellwidth,
+            self.A_hostdata.nnz,
+            self.A_hostdata.shape
+        )
+
+    def choose_plans(self):
+        if self.algorithm in ['ELLPACK', 'ELLPACK-tree']:
+            serial_reduction = False
+        elif self.algorithm in ['ELLPACK-accumulate']:
+            serial_reduction = True
+        plan = spmv_ellpack_impl(
+            self.queue,
+            self.A_device.columns,
+            self.A_device.entries,
+            self.A_device.ellwidth,
+            self.X,
+            self.Y,
+            inc=self.inc,
+            serial_reduction=serial_reduction,
+            tag=self.tag
+        )
+        return [plan]
+
+
+class plan_csr_inc(spmv_prog):
+    supported_algorithms = ['CSR']
+
+    @staticmethod
+    def scipy2csrdata(scipy_mat, force_nonempty=True):
+        scipy_csr = scipy_sparse.csr_matrix(scipy_mat)
+        return csr_matdata(
+            np.asarray(scipy_csr.indices, dtype=np.int32),
+            np.asarray(scipy_csr.indptr, dtype=np.int32),
+            np.asarray(scipy_csr.data, dtype=np.float32),
+            scipy_csr.nnz,
+            scipy_csr.shape
+        )
+
+    def to_hostdata(self):
+        self.A_hostdata = plan_csr_inc.scipy2csrdata(self.A_host)
+
+    def to_device(self):
+        self.A_device = csr_matdata(
+            to_device(self.queue, self.A_hostdata.indices),
+            to_device(self.queue, self.A_hostdata.indptr),
+            to_device(self.queue, self.A_hostdata.data),
+            self.A_hostdata.nnz,
+            self.A_hostdata.shape
+        )
+
+    def choose_plans(self):
+        plan = spmv_csr_impl(
+            self.queue,
+            self.A_device.indices,
+            self.A_device.indptr,
+            self.A_device.data,
+            self.X,
+            self.Y,
+            inc=self.inc,
+            tag=self.tag
+        )
+        return [plan]
+
+
+def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None):
     """Implements a sparse matrix-vector multiply: Y += A * X or Y = A * X
 
     Parameters
@@ -1504,3 +1636,16 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
         A_fanouts,
     )
     return plan
+
+
+def plan_sparse_dot_inc(*args, **kwargs):
+    ''' See spmv_prog for args and kwargs.
+        This function is mainly just to interface with the pattern in Simulator
+    '''
+    algorithm = kwargs.get('algorithm', 'ELLPACK')
+    if algorithm.upper().startswith('ELLPACK'):
+        return plan_ellpack_inc(*args, **kwargs)
+    elif algorithm.upper().startswith('CSR'):
+        return plan_csr_inc(*args, **kwargs)
+    else:
+        return spmv_prog(*args, **kwargs)
