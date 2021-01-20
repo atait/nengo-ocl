@@ -1372,7 +1372,7 @@ class plan_ellpack_serial(plan_ellpack_inc):
 
 class plan_ellpack_2d(plan_ellpack_inc):
     def choose_plans(self):
-        plan = spmv_ellpackbig_impl(
+        plans = spmv_ellpackbig_impl(
             self.queue,
             self.A_device.columns,
             self.A_device.entries,
@@ -1382,7 +1382,7 @@ class plan_ellpack_2d(plan_ellpack_inc):
             inc=self.inc,
             tag=self.tag
         )
-        return [plan]
+        return plans
 
 
 class csr_prog(spmv_prog):
@@ -1584,7 +1584,10 @@ def spmv_ellpack_impl(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, t
 
         // Load into individual products
         if (isynapse < ${max_fanout}) {
-            products[isynapse] = A_entries[ineuron * ${max_fanout} + isynapse] * x[A_columns[ineuron * ${max_fanout} + isynapse]];
+            const ${dtype} weight = A_entries[ineuron * ${max_fanout} + isynapse];
+            const int iupstream = A_columns[ineuron * ${max_fanout} + isynapse];
+            products[isynapse] =  weight * x[iupstream];
+//            products[isynapse] = A_entries[ineuron * ${max_fanout} + isynapse] * x[A_columns[ineuron * ${max_fanout} + isynapse]];
         }
 
         // Do reduction across work group
@@ -1659,101 +1662,128 @@ def spmv_ellpackbig_impl(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False
         Accumulate each row with a single worker without local memory or parallel multiplication
         Temporary; meant to test function interface without using special kernel features.
     """
-    wg_size = queue.device.max_work_group_size
+    wg_size = 32
     wg_per_synapse = round_up_power_of_2(A_fanouts // wg_size)
 
     kern = """
-    __kernel void ellpack_inc(
+    __kernel void ellpack_inc_wg(
         __global const int *A_columns,
         __global const ${dtype} *A_entries,
         __global const int *Xstarts,
         __global const ${dtype} *Xdata,
-        __global const int *Ystarts,
-        __global ${dtype} *Ydata,
-        __global ${dtype} *grid_accumulator
+        __global ${dtype} *Grid_accumulator
     )
     {
         // n can later be used to keep track of multiple arrays
         const int n = 0;
-        const int ineuron = get_group_id(0);
-        const int lid = get_local_id(0);
+        const int ineuron = get_global_id(0);
+        const int lid = get_local_id(1);
         const int wg_in_synapse = get_group_id(1);
-        const int isynapse = lid + get_group_id(1) * ${wg_size};
+        const int isynapse = lid + wg_in_synapse * ${wg_size};
 
         __global const ${dtype} *x = Xdata + Xstarts[n];
-        __global ${dtype} *y = Ydata + Ystarts[n];
+        __global ${dtype} *grid_accumulator = Grid_accumulator + ineuron * ${wg_per_synapse};
 
         __local ${dtype} products[${wg_size}];
 
-        // Load into individual products
+        // Load into individual products, doing the multiply and load at the same time
         if (isynapse < ${max_fanout}) {
             const ${dtype} weight = A_entries[ineuron * ${max_fanout} + isynapse];
             const int iupstream = A_columns[ineuron * ${max_fanout} + isynapse];
             products[lid] =  weight * x[iupstream];
+        } else {
+            products[lid] = 0;
         }
 
         // Do reduction across work group
         for (int offset = ${wg_size}/2; offset > 0; offset >>= 1) {
             barrier(CLK_LOCAL_MEM_FENCE);
-            if (lid < offset && lid + offset < ${max_fanout}) {
+            if (lid < offset && lid + offset < ${wg_size}) {
                 products[lid] += products[lid + offset];
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
+
         if (lid == 0) {
             grid_accumulator[wg_in_synapse] = products[0];
         }
+    }
 
-        // Do reduction across grid
+    __kernel void ellpack_inc_reduce(
+        __global const int *Ystarts,
+        __global ${dtype} *Ydata,
+        __global ${dtype} *Grid_accumulator
+    )
+    {
+        // n can later be used to keep track of multiple arrays
+        const int n = 0;
+        const int ineuron = get_global_id(0);
+        const int lid = get_local_id(1);
+
+        __global ${dtype} *y = Ydata + Ystarts[n];
+        __global ${dtype} *grid_accumulator = Grid_accumulator + ineuron * ${wg_per_synapse};
+        __local ${dtype} products[${wg_per_synapse}];
+
+        products[lid] = grid_accumulator[lid];
+
+
+        // Do reduction across work group, what was the grid in the previous kernel
         for (int offset = ${wg_per_synapse}/2; offset > 0; offset >>= 1) {
             barrier(CLK_LOCAL_MEM_FENCE);
-            if (lid == 0 && wg_in_synapse < offset && wg_in_synapse + offset < ${wg_per_synapse}) {
-                grid_accumulator[wg_in_synapse] += grid_accumulator[wg_in_synapse + offset];
+            if (lid < offset && lid + offset < ${wg_per_synapse}) {
+                products[lid] += products[lid + offset];
             }
         }
         barrier(CLK_LOCAL_MEM_FENCE);
 
-        // Store value
-        if (isynapse == 0) {
-    %if inc:
-            y[ineuron] += grid_accumulator[0];
-    %else:
-            y[ineuron] = grid_accumulator[0];
-    %endif
+        if (lid == 0) {
+            y[ineuron] = products[0];
         }
     }
     """
     textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts, wg_size=wg_size, wg_per_synapse=wg_per_synapse)
 
-    accumulator = to_device(queue, np.zeros(wg_per_synapse, dtype=Y.dtype))
+    nneurons = Y.sizes[0]
+    accumulator = to_device(queue, np.zeros((nneurons * wg_per_synapse), dtype=Y.dtype))
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
-    full_args = (
+    full_args_wg = (
         A_columns.base_data,
         A_entries.base_data,
         X.cl_starts.data,
         X.cl_buf.data,
+        accumulator.data
+    )
+    full_args_reduce = (
         Y.cl_starts.data,
         Y.cl_buf.data,
         accumulator.data
     )
-    _fn = cl.Program(queue.context, text).build().ellpack_inc
-    _fn.set_args(*full_args)
 
-    nneurons = Y.sizes[0]
-    gsize = (nneurons * wg_size, wg_per_synapse)
-    lsize = (wg_size, 1)
+    clprog = cl.Program(queue.context, text).build()
+    _fn1 = clprog.ellpack_inc_wg
+    _fn1.set_args(*full_args_wg)
+    _fn2 = clprog.ellpack_inc_reduce
+    _fn2.set_args(*full_args_reduce)
 
-    plan = Plan(queue, _fn, gsize, lsize=lsize, name="cl_ellpack", tag=tag)
-    plan.full_args = full_args  # prevent garbage-collection
-    plan.flops_per_call = 2 * np.prod(A_entries.shape)
-    plan.bw_per_call = A_entries.nbytes + A_columns.nbytes
-    plan.description = "groups: %d; shape: (%d, %d); fanouts: %d" % (
+    gsize1 = (nneurons, wg_per_synapse * wg_size)
+    lsize1 = (1, wg_size)
+
+    gsize2 = (nneurons, wg_per_synapse)
+    lsize2 = (1, wg_per_synapse)
+
+    plan1 = Plan(queue, _fn1, gsize1, lsize=lsize1, name="cl_ellpack_wg", tag=tag)
+    plan2 = Plan(queue, _fn2, gsize2, lsize=lsize2, name="cl_ellpack_reduce", tag=tag)
+    plan1.full_args = full_args_wg  # prevent garbage-collection
+    plan2.full_args = full_args_reduce  # prevent garbage-collection
+    plan1.flops_per_call = 2 * np.prod(A_entries.shape)
+    plan1.bw_per_call = A_entries.nbytes + A_columns.nbytes
+    plan1.description = "groups: %d; shape: (%d, %d); fanouts: %d" % (
         1,
         Y.sizes[0],
         X.sizes[0],
         A_fanouts,
     )
-    return plan
+    return [plan1, plan2]
 
 
 def plan_sparse_dot_inc(*args, **kwargs):

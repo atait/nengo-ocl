@@ -15,6 +15,7 @@ from nengo_ocl.clra_gemv import (
     plan_reduce_gemv,
     plan_sparse_dot_inc,
     plan_ellpack_inc,
+    plan_ellpack_2d,
     plan_csr_inc
 )
 from nengo_ocl.clraggedarray import CLRaggedArray as CLRA
@@ -41,6 +42,7 @@ def pytest_generate_tests(metafunc):
             "sparse_planner",
             [
                 plan_ellpack_inc,
+                plan_ellpack_2d,
                 # plan_csr_inc,
             ],
         )
@@ -378,8 +380,13 @@ def test_speed(ctx, rng):  # noqa: C901
 
 
 @pytest.mark.parametrize("inc", [False])
-@pytest.mark.parametrize("sparsity", [0.02, .2])
-@pytest.mark.parametrize("shape", [32, 64, 2000, 1999, (10, 5000), (5000, 10), (20, 30)])
+@pytest.mark.parametrize("sparsity", [0.8])
+@pytest.mark.parametrize("shape", [
+    32,
+    200,
+    2000,
+    1999, (10, 5000), (5000, 10), (20, 30)
+])
 def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
@@ -389,7 +396,7 @@ def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     if 0:  # pylint: disable=using-constant-test
         # diagonal matrix
         s = min(shape[0], shape[1])
-        data = list(range(s))
+        data = list(np.ones(s))
         ii = list(range(s))
         jj = list(range(s))[::-1]
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
@@ -400,10 +407,10 @@ def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
         mask = rng.uniform(size=shape) < sparsity
         ii, jj = mask.nonzero()
         assert len(ii) > 0, 'all elements zero. too sparse'  # Actually this should still work if all zeros
-        data = rng.uniform(-1, 1, size=len(ii))
+        data = rng.uniform(0, 1, size=len(ii))
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
-        X = RA([rng.uniform(-1, 1, size=shape[1])])
-        Y = RA([rng.uniform(-1, 1, size=shape[0])])
+        X = RA([rng.uniform(0, 1, size=shape[1])])
+        Y = RA([rng.uniform(0, 1, size=shape[0])])
     else:
         raise ValueError('Invalid spmv_type: {}'.format(spmv_type))
 
@@ -425,4 +432,5 @@ def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     # -- ensure they match
     ref = (Y[0] if inc else 0) + A.dot(X[0])
     sim = clY[0]
+    print(sim)
     assert allclose(ref, sim, atol=1e-6)
