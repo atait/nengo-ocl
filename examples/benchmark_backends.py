@@ -16,15 +16,19 @@ import numpy as np
 
 ##### User modifies this section often
 benchmark_script = "benchmark_wattsstrogatz.py"
-# nns = np.logspace(7, 20, 8, base=2).astype(int)[::-1]
+nns = np.logspace(7, 20, 10, base=2).astype(int)[::-1]
 # nns = [128, 1024]
-nns = 2 ** np.arange(10, 19)[::-1]
-sims = [
-    ("dl", "Nengo-DL"),
-    ("ocl", "Nengo-OCL-csr"),
-    ("ocl", "Nengo-OCL-ell"),
-    ("ref", "Reference"),
-]
+# nns = 2 ** np.arange(10, 19)[::-1]
+# sims = [
+#     ("dl", "Nengo-DL"),
+#     ("ocl", "Nengo-OCL-csr"),
+#     ("ocl", "Nengo-OCL-ell"),
+#     ("ref", "Reference"),
+# ]
+# Use to compare ELLPACK implementations
+from nengo_ocl.clra_gemv import algostr_to_planner
+sims = [("ocl", algo) for algo in algostr_to_planner.keys()] + [("ref", "Reference")]
+
 name2file = lambda name: "record_{}.yml".format(
     name
 )  # you can use slashes to load/save from subdirectories
@@ -40,7 +44,8 @@ if len(sys.argv) > 1 and sys.argv[1] == "simulate":
             name2file(simname),
         ]
         ### set backend-specific environment variables here
-        os.environ["use_ellpack"] = "1" if simname.endswith("ell") else "0"
+        os.environ["NENGO_OCL_SPMV_ALGORITHM"] = simname
+        # "ELLPACK" if simname.endswith("ell") else "CSR"
         ###
         with open(benchmark_script) as fx:
             exec(fx.read())

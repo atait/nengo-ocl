@@ -45,10 +45,10 @@ def pytest_generate_tests(metafunc):
             "sparse_planner",
             [
                 plan_ellpack,
-                plan_ellpack_twostep,
-                plan_ellpack_nonlocal,
-                plan_ellpack_tree,
-                plan_ellpack_serial,
+                # plan_ellpack_twostep,
+                # plan_ellpack_nonlocal,
+                # plan_ellpack_tree,
+                # plan_ellpack_serial,
                 plan_csr,
             ],
         )
@@ -385,10 +385,10 @@ def test_speed(ctx, rng):  # noqa: C901
         print("clBLAS: %0.3f" % timer.duration)
 
 
-@pytest.mark.parametrize("inc", [False, True])
+@pytest.mark.parametrize("inc", [False])
 @pytest.mark.parametrize("sparsity", [0.02, 0.8])
 @pytest.mark.parametrize(
-    "shape", [32, 200, 2000, 1999, (10, 5000), (5000, 10), (20, 30)]
+    "shape", [32, 200, 2000, 1999, (1, 5000), (5000, 1), (20, 30)]
 )
 def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     scipy_sparse = pytest.importorskip("scipy.sparse")
