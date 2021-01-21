@@ -41,7 +41,7 @@ def pytest_generate_tests(metafunc):
             "sparse_planner",
             [
                 plan_ellpack_inc,
-                plan_csr_inc,
+                # plan_csr_inc,
             ],
         )
 

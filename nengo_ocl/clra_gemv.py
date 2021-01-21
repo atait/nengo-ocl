@@ -2,7 +2,7 @@
 
 # pylint: disable=missing-class-docstring,missing-function-docstring
 
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 
 import numpy as np
 import pyopencl as cl
@@ -10,7 +10,7 @@ from mako.template import Template
 
 from nengo_ocl.clraggedarray import CLRaggedArray, to_device
 from nengo_ocl.plan import Plan
-from nengo_ocl.utils import as_ascii, round_up
+from nengo_ocl.utils import as_ascii, round_up, round_up_power_of_2
 from nengo.utils.numpy import scipy_sparse
 
 
@@ -1248,27 +1248,30 @@ class spmv_prog:
     supported_algorithms = []
 
     def __init__(
-        self, queue, A_host, X, Y, inc=False, algorithm=None, tag=None,
+        self, queue, A_host, X, Y, inc=False, algorithm='ELLPACK', tag=None,
     ):
         self.queue = queue
         self.A_host = A_host
         self.X = X
         self.Y = Y
         self.inc = inc
-        self.tag = tag
-        if algorithm is None:
-            algorithm = self.supported_algorithms[0]
         self.algorithm = algorithm.upper()
         if self.algorithm not in self.supported_algorithms:
             raise ValueError('Invalid SpMV algorithm for {}: {}. '
                              'Supported are {}'.format(type(self), algorithm, self.supported_algorithms))
 
+        if self.algorithm.startswith('ELLPACK'):
+            self.A_hostdata = spmv_prog.scipy2elldata(self.A_host)
+        elif self.algorithm.startswith('CSR'):
+            self.A_hostdata = spmv_prog.scipy2csrdata(self.A_host)
+
         self.to_hostdata()
         self.to_device()
+        self.validate_data()
         self.plans = self.choose_plans()
 
 
-class plan_ellpack_inc(spmv_prog):
+class ellpack_prog(spmv_prog):
     supported_algorithms = ['ELLPACK', 'ELLPACK-accumulate']
 
     @staticmethod
@@ -1282,7 +1285,7 @@ class plan_ellpack_inc(spmv_prog):
         shape = scipy_mat.shape
         rowlens = np.array([len(rowdata) for rowdata in lilmat.rows])
         columns = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=np.int32)
-        entries = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=np.float32)
+        entries = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=og_mat.dtype)
         ellwidth = max(rowlens)
         nnz = sum(rowlens)
 
@@ -1298,25 +1301,61 @@ class plan_ellpack_inc(spmv_prog):
         return ell_matdata(columns, entries, rowlens, ellwidth, nnz, shape)
 
     def to_hostdata(self):
-        self.A_hostdata = plan_ellpack_inc.scipy2elldata(self.A_host)
+        self.A_hostdata = ellpack_prog.scipy2elldata(self.A_host)
 
     def to_device(self):
         A_columns_host = self.A_hostdata.columns.reshape(-1)
         A_entries_host = self.A_hostdata.entries.reshape(-1)
         self.A_device = ell_matdata(
-            to_device(self.queue, A_columns_host),
-            to_device(self.queue, A_entries_host),
-            self.A_hostdata.rowlens,
-            self.A_hostdata.ellwidth,
+            self.Array(A_columns_host, dtype=np.int32),
+            self.Array(A_entries_host),
+            self.A_hostdata.ellwidth
             self.A_hostdata.nnz,
             self.A_hostdata.shape
         )
 
+    def validate_data(self):
+        assert len(self.X) == len(self.Y) == 1
+
+        for arr in [self.X, self.Y]:
+            assert (arr.stride1s == 1).all()
+            if not ((arr.shape1s == 1).all() and (arr.stride0s == 1).all()):
+                raise NotImplementedError(
+                    "OCL SparseDot only supports matrix-vector currently, not matrix-matrix"
+                )
+
+        for arr in [self.A_device.columns, self.A_device.entries]:
+            assert len(arr.shape) == 1
+            # assert arr.strides[-1] == arr.dtype.itemsize  # contiguous
+
+        assert self.A_device.columns.shape == self.A_device.entries.shape
+        assert self.A_device.columns.size == self.A_device.entries.size
+
+        assert self.A_device.entries.ctype == self.X.ctype == self.Y.ctype
+        assert self.A_device.columns.ctype == "int"
+
+
     def choose_plans(self):
-        if self.algorithm in ['ELLPACK', 'ELLPACK-tree']:
-            serial_reduction = False
-        elif self.algorithm in ['ELLPACK-accumulate']:
-            serial_reduction = True
+        if self.A_device.ellwidth > self.queue.device.max_work_group_size:
+            return plan_ellpack_2d.choose_plans(self)
+        plan = spmv_ellpack_impl(
+            self.queue,
+            self.A_device.columns,
+            self.A_device.entries,
+            self.A_device.ellwidth,
+            inc=self.inc,
+            serial_reduction=False,
+            tag=self.tag
+        )
+        return [plan]
+
+
+class plan_ellpack_tree(plan_ellpack_inc):
+    pass
+
+
+class plan_ellpack_serial(plan_ellpack_inc):
+    def choose_plans(self):
         plan = spmv_ellpack_impl(
             self.queue,
             self.A_device.columns,
@@ -1325,34 +1364,43 @@ class plan_ellpack_inc(spmv_prog):
             self.X,
             self.Y,
             inc=self.inc,
-            serial_reduction=serial_reduction,
+            serial_reduction=True,
             tag=self.tag
         )
         return [plan]
 
 
-class plan_csr_inc(spmv_prog):
+class plan_ellpack_2d(plan_ellpack_inc):
+    def choose_plans(self):
+        plan = spmv_ellpackbig_impl(
+            self.queue,
+            self.A_device.columns,
+            self.A_device.entries,
+            self.A_device.ellwidth,
+            self.X,
+            self.Y,
+            inc=self.inc,
+            tag=self.tag
+        )
+        return [plan]
+
+
+class csr_prog(spmv_prog):
     supported_algorithms = ['CSR']
 
     @staticmethod
     def scipy2csrdata(scipy_mat, force_nonempty=True):
-        scipy_csr = scipy_sparse.csr_matrix(scipy_mat)
-        return csr_matdata(
-            np.asarray(scipy_csr.indices, dtype=np.int32),
-            np.asarray(scipy_csr.indptr, dtype=np.int32),
-            np.asarray(scipy_csr.data, dtype=np.float32),
-            scipy_csr.nnz,
-            scipy_csr.shape
-        )
+        scipy_csr = scipy_sparse.tocsr(scipy_mat)
+        return csr_matdata(scipy_csr.indices, scipy_csr.indptr, scipy_csr.data, scipy_csr.nnz, scipy_csr.shape)
 
     def to_hostdata(self):
-        self.A_hostdata = plan_csr_inc.scipy2csrdata(self.A_host)
+        self.A_hostdata = csr_prog.scipy2csrdata(self.A_host)
 
     def to_device(self):
         self.A_device = csr_matdata(
-            to_device(self.queue, self.A_hostdata.indices),
-            to_device(self.queue, self.A_hostdata.indptr),
-            to_device(self.queue, self.A_hostdata.data),
+            self.Array(self.A_hostdata.indices, dtype=np.int32),
+            self.Array(self.A_hostdata.indptr, dtype=np.int32),
+            self.Array(self.A_hostdata.data),
             self.A_hostdata.nnz,
             self.A_hostdata.shape
         )
@@ -1423,6 +1471,10 @@ def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None)
         const int n = 0;
         const int irow = get_global_id(0);
 
+        if (irow >= ${Y_size}) {
+            return;
+        }
+
         __global const ${dtype} *x = Xdata + Xstarts[n];
         __global ${dtype} *y = Ydata + Ystarts[n];
 
@@ -1435,7 +1487,7 @@ def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None)
         }
     }
     """
-    textconf = dict(dtype=A_data.ctype, IndType=A_indices.ctype, inc=inc)
+    textconf = dict(dtype=A_data.ctype, IndType=A_indices.ctype, inc=inc, Y_size=Y.sizes[0])
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
     full_args = (
         A_indices.base_data,
@@ -1449,8 +1501,8 @@ def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None)
     _fn = cl.Program(queue.context, text).build().sparsedot_inc
     _fn.set_args(*full_args)
 
-    gsize = (Y.sizes[0], 1)  # this only works for a single operation
-    lsize = None
+    gsize = (round_up(Y.sizes[0], 32), 1)  # this only works for a single operation
+    lsize = (32, 1)
     plan = Plan(queue, _fn, gsize, lsize=lsize, name="cl_sparsedot", tag=tag)
     plan.full_args = full_args  # prevent garbage-collection
     plan.flops_per_call = 2 * A_data.size
@@ -1464,34 +1516,7 @@ def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None)
     return plan
 
 
-from collections import namedtuple
-ell_matrix = namedtuple('ell_matrix', ['columns', 'entries', 'rowlens', 'shape'])
-
-
-def scipy2ell(og_mat, non_empty=False):
-    ''' Works with scipy sparse or numpy dense argument '''
-    try:
-        lilmat = og_mat.tolil()
-    except AttributeError:
-        lilmat = scipy_sparse.lil_matrix(og_mat)  # sometimes this fails horribly and quietly
-    shape = og_mat.shape
-    rowlens = np.array([len(rowdata) for rowdata in lilmat.rows])
-    columns = np.zeros((og_mat.shape[0], max(rowlens)), dtype=np.int32)
-    entries = np.zeros((og_mat.shape[0], max(rowlens)), dtype=og_mat.dtype)
-
-    for irow, rowlen in enumerate(rowlens):
-        columns[irow, :rowlen] = lilmat.rows[irow]
-        entries[irow, :rowlen] = lilmat.data[irow]
-
-    if non_empty and columns.size == 0:  # don't allow empty matrices
-        columns = np.zeros((shape[0], 1), dtype=columns.dtype)
-        entries = np.zeros((shape[0], 1), dtype=entries.dtype)
-        rowlens[0] = 1
-
-    return ell_matrix(columns, entries, rowlens, shape)
-
-
-def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, tag=None, serial_reduction=True):
+def spmv_ellpack_impl(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, tag=None, serial_reduction=True):
     """Implements a sparse matrix-vector multiply: Y += A * X or Y = A * X
 
     Parameters
@@ -1508,23 +1533,7 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
         Accumulate each row with a single worker without local memory or parallel multiplication
         Temporary; meant to test function interface without using special kernel features.
     """
-    assert len(X) == len(Y) == 1
-
-    for arr in [X, Y]:
-        assert (arr.stride1s == 1).all()
-        if not ((arr.shape1s == 1).all() and (arr.stride0s == 1).all()):
-            raise NotImplementedError(
-                "OCL SparseDot only supports matrix-vector currently, not matrix-matrix"
-            )
-
-    for arr in [A_columns, A_entries]:
-        assert len(arr.shape) == 1
-        # assert arr.strides[-1] == arr.dtype.itemsize  # contiguous
-
-    assert A_columns.size == A_entries.size
-
-    assert A_entries.ctype == X.ctype == Y.ctype
-    assert A_columns.ctype == "int"
+    wg_size = round_up_power_of_2(A_fanouts)
 
     kern_serial = """
     __kernel void ellpack_inc(
@@ -1579,8 +1588,7 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
         }
 
         // Do reduction across work group
-        for (int offset = ${wg_size}; offset > 0; offset /= 2) {
-            //int mask = 2 * offset - 1;
+        for (int offset = ${wg_size}/2; offset > 0; offset >>= 1) {
             barrier(CLK_LOCAL_MEM_FENCE);
             if (isynapse < offset && isynapse + offset < ${max_fanout}) {
                 products[isynapse] += products[isynapse + offset];
@@ -1598,12 +1606,8 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
         }
     }
     """
-    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts)
+    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts, wg_size=wg_size)
     kern = kern_serial if serial_reduction else kern_parallel
-    if not serial_reduction:
-        wg_size = round_up(A_fanouts, 64)
-        # wg_size = A_fanouts
-        textconf.update(wg_size=wg_size)
 
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
     full_args = (
@@ -1638,14 +1642,128 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
     return plan
 
 
+def spmv_ellpackbig_impl(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, tag=None, serial_reduction=True):
+    """Implements a sparse matrix-vector multiply: Y += A * X or Y = A * X
+
+    Parameters
+    ----------
+    A_columns : PyOpenCL array
+        ELLPACK format of specifying nonzero connection indices
+    A_entries : PyOpenCL array
+        Matrix values at those indices
+    X, Y : CLRaggedArrays of length 1
+        Input/output data.
+    inc : bool
+        Whether to increment ``Y`` (True), or set it (False).
+    serial_reduction : bool
+        Accumulate each row with a single worker without local memory or parallel multiplication
+        Temporary; meant to test function interface without using special kernel features.
+    """
+    wg_size = queue.device.max_work_group_size
+    wg_per_synapse = round_up_power_of_2(A_fanouts // wg_size)
+
+    kern = """
+    __kernel void ellpack_inc(
+        __global const int *A_columns,
+        __global const ${dtype} *A_entries,
+        __global const int *Xstarts,
+        __global const ${dtype} *Xdata,
+        __global const int *Ystarts,
+        __global ${dtype} *Ydata,
+        __global ${dtype} *grid_accumulator
+    )
+    {
+        // n can later be used to keep track of multiple arrays
+        const int n = 0;
+        const int ineuron = get_group_id(0);
+        const int lid = get_local_id(0);
+        const int wg_in_synapse = get_group_id(1);
+        const int isynapse = lid + get_group_id(1) * ${wg_size};
+
+        __global const ${dtype} *x = Xdata + Xstarts[n];
+        __global ${dtype} *y = Ydata + Ystarts[n];
+
+        __local ${dtype} products[${wg_size}];
+
+        // Load into individual products
+        if (isynapse < ${max_fanout}) {
+            const ${dtype} weight = A_entries[ineuron * ${max_fanout} + isynapse];
+            const int iupstream = A_columns[ineuron * ${max_fanout} + isynapse];
+            products[lid] =  weight * x[iupstream];
+        }
+
+        // Do reduction across work group
+        for (int offset = ${wg_size}/2; offset > 0; offset >>= 1) {
+            barrier(CLK_LOCAL_MEM_FENCE);
+            if (lid < offset && lid + offset < ${max_fanout}) {
+                products[lid] += products[lid + offset];
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+        if (lid == 0) {
+            grid_accumulator[wg_in_synapse] = products[0];
+        }
+
+        // Do reduction across grid
+        for (int offset = ${wg_per_synapse}/2; offset > 0; offset >>= 1) {
+            barrier(CLK_LOCAL_MEM_FENCE);
+            if (lid == 0 && wg_in_synapse < offset && wg_in_synapse + offset < ${wg_per_synapse}) {
+                grid_accumulator[wg_in_synapse] += grid_accumulator[wg_in_synapse + offset];
+            }
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+
+        // Store value
+        if (isynapse == 0) {
+    %if inc:
+            y[ineuron] += grid_accumulator[0];
+    %else:
+            y[ineuron] = grid_accumulator[0];
+    %endif
+        }
+    }
+    """
+    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts, wg_size=wg_size, wg_per_synapse=wg_per_synapse)
+
+    accumulator = to_device(queue, np.zeros(wg_per_synapse, dtype=Y.dtype))
+    text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
+    full_args = (
+        A_columns.base_data,
+        A_entries.base_data,
+        X.cl_starts.data,
+        X.cl_buf.data,
+        Y.cl_starts.data,
+        Y.cl_buf.data,
+        accumulator.data
+    )
+    _fn = cl.Program(queue.context, text).build().ellpack_inc
+    _fn.set_args(*full_args)
+
+    nneurons = Y.sizes[0]
+    gsize = (nneurons * wg_size, wg_per_synapse)
+    lsize = (wg_size, 1)
+
+    plan = Plan(queue, _fn, gsize, lsize=lsize, name="cl_ellpack", tag=tag)
+    plan.full_args = full_args  # prevent garbage-collection
+    plan.flops_per_call = 2 * np.prod(A_entries.shape)
+    plan.bw_per_call = A_entries.nbytes + A_columns.nbytes
+    plan.description = "groups: %d; shape: (%d, %d); fanouts: %d" % (
+        1,
+        Y.sizes[0],
+        X.sizes[0],
+        A_fanouts,
+    )
+    return plan
+
+
 def plan_sparse_dot_inc(*args, **kwargs):
     ''' See spmv_prog for args and kwargs.
         This function is mainly just to interface with the pattern in Simulator
     '''
     algorithm = kwargs.get('algorithm', 'ELLPACK')
     if algorithm.upper().startswith('ELLPACK'):
-        return plan_ellpack_inc(*args, **kwargs)
+        return ellpack_prog(*args, **kwargs)
     elif algorithm.upper().startswith('CSR'):
-        return plan_csr_inc(*args, **kwargs)
+        return csr_prog(*args, **kwargs)
     else:
         return spmv_prog(*args, **kwargs)
