@@ -19,15 +19,15 @@ benchmark_script = "benchmark_wattsstrogatz.py"
 nns = np.logspace(7, 20, 10, base=2).astype(int)[::-1]
 # nns = [128, 1024]
 # nns = 2 ** np.arange(10, 19)[::-1]
-# sims = [
-#     ("dl", "Nengo-DL"),
+sims = [
+    ("dl", "Nengo-DL"),
 #     ("ocl", "Nengo-OCL-csr"),
 #     ("ocl", "Nengo-OCL-ell"),
-#     ("ref", "Reference"),
-# ]
+    ("ref", "Reference"),
+]
 # Use to compare ELLPACK implementations
 from nengo_ocl.clra_gemv import algostr_to_planner
-sims = [("ocl", algo) for algo in algostr_to_planner.keys()] + [("ref", "Reference")]
+sims += [("ocl", algo) for algo in algostr_to_planner.keys()]
 
 name2file = lambda name: "record_{}.yml".format(
     name
