@@ -883,16 +883,18 @@ class Simulator:
         return [plan_elementwise_inc(self.queue, A, X, Y)]
 
     def _plan_SparseDotInc(self, ops):
+        ''' Sparse MV algorithm is simulation-wide and can be controlled
+            by setting configuration variable "NENGO_OCL_SPMV_ALGORITHM"
+        '''
         assert scipy_sparse is not None
-        use_ellpack = False
 
         # currently gives one plan per sparse operation instead of combining them all
         plans = []
         for op in ops:
-            A = self.sparse_data[self.sparse_sidx[op.A]].tocsr()
+            A = self.sparse_data[self.sparse_sidx[op.A]]
             X = self.all_data[[self.sidx[op.X]]]
             Y = self.all_data[[self.sidx[op.Y]]]
-            rval = plan_sparse_dot_inc(self.queue, A, X, Y, algorithm=algorithm)
+            rval = plan_sparse_dot_inc(self.queue, A, X, Y)
             plans += rval.plans
 
         return plans

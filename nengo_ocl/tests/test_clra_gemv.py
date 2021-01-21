@@ -14,9 +14,12 @@ from nengo_ocl.clra_gemv import (
     plan_ragged_gather_gemv,
     plan_reduce_gemv,
     plan_sparse_dot_inc,
-    plan_ellpack_inc,
-    plan_ellpack_2d,
-    plan_csr_inc
+    plan_ellpack,
+    plan_ellpack_tree,
+    plan_ellpack_twostep,
+    plan_ellpack_nonlocal,
+    plan_ellpack_serial,
+    plan_csr
 )
 from nengo_ocl.clraggedarray import CLRaggedArray as CLRA
 from nengo_ocl.clraggedarray import to_device
@@ -41,9 +44,12 @@ def pytest_generate_tests(metafunc):
         metafunc.parametrize(
             "sparse_planner",
             [
-                plan_ellpack_inc,
-                plan_ellpack_2d,
-                # plan_csr_inc,
+                plan_ellpack,
+                plan_ellpack_twostep,
+                plan_ellpack_nonlocal,
+                plan_ellpack_tree,
+                plan_ellpack_serial,
+                plan_csr,
             ],
         )
 
@@ -380,7 +386,7 @@ def test_speed(ctx, rng):  # noqa: C901
 
 
 @pytest.mark.parametrize("inc", [False])
-@pytest.mark.parametrize("sparsity", [0.8])
+@pytest.mark.parametrize("sparsity", [0.02, 0.8])
 @pytest.mark.parametrize("shape", [
     32,
     200,
@@ -421,16 +427,21 @@ def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     assert allclose(X, clX)
     assert allclose(Y, clY)
 
+    # -- check for anticipated failures
+    if (sparse_planner in [plan_ellpack_serial, plan_ellpack_tree]
+        and any(len(rowdata) > 1024 for rowdata in A.tolil().rows)
+    ):
+        pytest.skip("Single-stage algorithms cannot work with >1024 workers")
+
+    # -- make plans (check for anticipated failures first)
     prog = sparse_planner(queue, A, clX, clY, inc=inc)
 
     # -- run cl computation
     plans = prog.plans
-    # assert len(plans) == 1
     for plan in plans:
         plan()
 
     # -- ensure they match
     ref = (Y[0] if inc else 0) + A.dot(X[0])
     sim = clY[0]
-    print(sim)
     assert allclose(ref, sim, atol=1e-6)

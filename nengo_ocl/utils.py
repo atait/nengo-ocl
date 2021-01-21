@@ -50,7 +50,7 @@ def round_up(x, n):
 
 def round_up_power_of_2(x):
     x = int(x)
-    return 1 if x == 0 else 2**(x - 1).bit_length()
+    return int(1 if x == 0 else 2**(x - 1).bit_length())
 
 
 def split(iterator, criterion):
