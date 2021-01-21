@@ -14,6 +14,8 @@ from nengo_ocl.clra_gemv import (
     plan_ragged_gather_gemv,
     plan_reduce_gemv,
     plan_sparse_dot_inc,
+    plan_ellpack_inc,
+    scipy2ell,
 )
 from nengo_ocl.clraggedarray import CLRaggedArray as CLRA
 from nengo_ocl.clraggedarray import to_device
@@ -44,7 +46,7 @@ def ra_allclose(raA, raB):
     return True
 
 
-def test_basic(ctx):
+def test_basic(ctx, planner):
     # -- prepare initial conditions on host
     A = RA([[[0.1, 0.2], [0.3, 0.4]], [[0.5, 0.6]]])
     X = RA([[3, 5]])
@@ -66,7 +68,7 @@ def test_basic(ctx):
     assert ra_allclose(Y, clY)
 
     # -- run cl computation
-    prog = plan_ragged_gather_gemv(queue, alpha, clA, A_js, clX, X_js, beta, clY)
+    prog = planner(queue, alpha, clA, A_js, clX, X_js, beta, clY)
     # plans = prog.choose_plans()
     # assert len(plans) == 1
     for plan in prog.plans:
@@ -385,7 +387,7 @@ def test_sparse(ctx, inc, rng, allclose):
     else:
         # random sparse matrix
         shape = (500, 500)
-        sparsity = 0.002
+        sparsity = 0.02
         mask = rng.uniform(size=shape) < sparsity
         ii, jj = mask.nonzero()
         assert len(ii) > 0
@@ -393,9 +395,15 @@ def test_sparse(ctx, inc, rng, allclose):
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
         X = RA([rng.uniform(-1, 1, size=shape[1])])
         Y = RA([rng.uniform(-1, 1, size=shape[0])])
+    Aell = scipy2ell(A)
+    A_fanouts = Aell.columns.shape[1]
 
     # -- prepare initial conditions on device
     queue = cl.CommandQueue(ctx)
+    # ELLPACK
+    A_columns = to_device(queue, Aell.columns.reshape(-1).astype(np.int32))
+    A_entries = to_device(queue, Aell.entries.reshape(-1).astype(np.float32))
+    # CSR
     A_data = to_device(queue, A.data.astype(np.float32))
     A_indices = to_device(queue, A.indices.astype(np.int32))
     A_indptr = to_device(queue, A.indptr.astype(np.int32))
@@ -405,7 +413,8 @@ def test_sparse(ctx, inc, rng, allclose):
     assert allclose(Y, clY)
 
     # -- run cl computation
-    plan = plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, clX, clY, inc=inc)
+    # plan = plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, clX, clY, inc=inc)
+    plan = plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, clX, clY, inc=inc)
     plan()
 
     # -- ensure they match

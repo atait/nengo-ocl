@@ -114,7 +114,8 @@ for i, n_neurons in enumerate(ns_neurons):
             nengo_dl.configure_settings(inference_only=True)
 
         # inputA = nengo.Node(a)
-        ens = nengo.Ensemble(n_neurons, 1)
+        neuron_type = nengo.neurons.LIF(tau_ref=.001)
+        ens = nengo.Ensemble(n_neurons, 1, neuron_type=neuron_type)
         # nengo.Connection(inputA, ens.neurons, synapse=0.03)
 
         weimat = wattsstrogatz_adjacencies(n_neurons)

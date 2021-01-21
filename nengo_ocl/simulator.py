@@ -884,19 +884,29 @@ class Simulator:
 
     def _plan_SparseDotInc(self, ops):
         assert scipy_sparse is not None
+        use_ellpack = False
 
         # currently gives one plan per sparse operation instead of combining them all
         plans = []
         for op in ops:
             A = self.sparse_data[self.sparse_sidx[op.A]].tocsr()
-            A_indices = self.Array(A.indices, dtype=np.int32)
-            A_indptr = self.Array(A.indptr, dtype=np.int32)
-            A_data = self.Array(A.data)
             X = self.all_data[[self.sidx[op.X]]]
             Y = self.all_data[[self.sidx[op.Y]]]
-            plans.append(
-                plan_sparse_dot_inc(self.queue, A_indices, A_indptr, A_data, X, Y)
-            )
+            if use_ellpack:
+                Aell = scipy2ell(A)
+                A_fanouts = np.max(Aell.rowlens)
+                A_columns = self.Array(Aell.columns.reshape(-1), dtype=np.int32)
+                A_entries = self.Array(Aell.entries.reshape(-1))
+                plans.append(
+                    plan_ellpack_inc(self.queue, A_columns, A_entries, A_fanouts, X, Y)
+                )
+            else:
+                A_indices = self.Array(A.indices, dtype=np.int32)
+                A_indptr = self.Array(A.indptr, dtype=np.int32)
+                A_data = self.Array(A.data)
+                plans.append(
+                    plan_sparse_dot_inc(self.queue, A_indices, A_indptr, A_data, X, Y)
+                )
 
         return plans
 

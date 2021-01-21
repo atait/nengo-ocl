@@ -11,6 +11,7 @@ from mako.template import Template
 from nengo_ocl.clraggedarray import CLRaggedArray, to_device
 from nengo_ocl.plan import Plan
 from nengo_ocl.utils import as_ascii
+from nengo.utils.numpy import scipy_sparse
 
 
 def float_cl_clra(queue, arg, cl_dtype, N):
@@ -1327,5 +1328,128 @@ def plan_sparse_dot_inc(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag
         Y.sizes[0],
         X.sizes[0],
         A_data.size,
+    )
+    return plan
+
+
+from collections import namedtuple
+ell_matrix = namedtuple('ell_matrix', ['columns', 'entries', 'rowlens', 'shape'])
+
+
+def scipy2ell(og_mat, non_empty=False):
+    ''' Works with scipy sparse or numpy dense argument '''
+    try:
+        lilmat = og_mat.tolil()
+    except AttributeError:
+        lilmat = scipy_sparse.lil_matrix(og_mat)  # sometimes this fails horribly and quietly
+    shape = og_mat.shape
+    rowlens = np.array([len(rowdata) for rowdata in lilmat.rows])
+    columns = np.zeros((og_mat.shape[0], max(rowlens)), dtype=np.int32)
+    entries = np.zeros((og_mat.shape[0], max(rowlens)), dtype=og_mat.dtype)
+
+    for irow, rowlen in enumerate(rowlens):
+        columns[irow, :rowlen] = lilmat.rows[irow]
+        entries[irow, :rowlen] = lilmat.data[irow]
+
+    if non_empty and columns.size == 0:  # don't allow empty matrices
+        columns = np.zeros((shape[0], 1), dtype=columns.dtype)
+        entries = np.zeros((shape[0], 1), dtype=entries.dtype)
+        rowlens[0] = 1
+
+    return ell_matrix(columns, entries, rowlens, shape)
+
+
+def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, tag=None, serial_reduction=True):
+    """Implements a sparse matrix-vector multiply: Y += A * X or Y = A * X
+
+    Parameters
+    ----------
+    A_indices, A_indptr : PyOpenCL array
+        Column sparse row index specifications
+    A_data : PyOpenCL array
+        Matrix values at those indices
+    X, Y : CLRaggedArrays of length 1
+        Input/output data.
+    inc : bool
+        Whether to increment ``Y`` (True), or set it (False).
+
+    Notes
+    -----
+    This function crashes when there are >10M nonzero weights. A potential solution
+    would be some way to tell each work item to do multiple rows.
+    """
+    assert len(X) == len(Y) == 1
+
+    for arr in [X, Y]:
+        assert (arr.stride1s == 1).all()
+        if not ((arr.shape1s == 1).all() and (arr.stride0s == 1).all()):
+            raise NotImplementedError(
+                "OCL SparseDot only supports matrix-vector currently, not matrix-matrix"
+            )
+
+    for arr in [A_columns, A_entries]:
+        assert len(arr.shape) == 1
+        # assert arr.strides[-1] == arr.dtype.itemsize  # contiguous
+
+    assert A_columns.size == A_entries.size
+
+    assert A_entries.ctype == X.ctype == Y.ctype
+    assert A_columns.ctype == "int"
+
+    kern_serial = """
+    __kernel void ellpack_inc(
+        __global const int *A_columns,
+        __global const ${dtype} *A_entries,
+        __global const int *Xstarts,
+        __global const ${dtype} *Xdata,
+        __global const int *Ystarts,
+        __global ${dtype} *Ydata
+    )
+    {
+        // n can later be used to keep track of multiple arrays
+        const int n = 0;
+        const int irow = get_global_id(0);
+
+        __global const ${dtype} *x = Xdata + Xstarts[n];
+        __global ${dtype} *y = Ydata + Ystarts[n];
+
+    %if not inc:
+        y[irow] = 0;
+    %endif
+        for (int k = 0; k < ${max_fanout}; k++) {
+            y[irow] += A_entries[irow * ${max_fanout} + k] * x[A_columns[irow * ${max_fanout} + k]];
+        }
+    }
+    """
+    kern_parallel = """
+    """
+    kern = kern_serial if serial_reduction else kern_parallel
+
+    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts)
+    text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
+    full_args = (
+        A_columns.base_data,
+        A_entries.base_data,
+        X.cl_starts.data,
+        X.cl_buf.data,
+        Y.cl_starts.data,
+        Y.cl_buf.data,
+    )
+    _fn = cl.Program(queue.context, text).build().ellpack_inc
+    _fn.set_args(*full_args)
+
+    # TODO
+    gsize = (Y.sizes[0], 1)
+    lsize = None
+
+    plan = Plan(queue, _fn, gsize, lsize=lsize, name="cl_ellpack", tag=tag)
+    plan.full_args = full_args  # prevent garbage-collection
+    plan.flops_per_call = 2 * np.prod(A_entries.shape)
+    plan.bw_per_call = A_entries.nbytes + A_columns.nbytes
+    plan.description = "groups: %d; shape: (%d, %d); fanouts: %d" % (
+        1,
+        Y.sizes[0],
+        X.sizes[0],
+        A_fanouts,
     )
     return plan
