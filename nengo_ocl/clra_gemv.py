@@ -1364,19 +1364,17 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
 
     Parameters
     ----------
-    A_indices, A_indptr : PyOpenCL array
-        Column sparse row index specifications
-    A_data : PyOpenCL array
+    A_columns : PyOpenCL array
+        ELLPACK format of specifying nonzero connection indices
+    A_entries : PyOpenCL array
         Matrix values at those indices
     X, Y : CLRaggedArrays of length 1
         Input/output data.
     inc : bool
         Whether to increment ``Y`` (True), or set it (False).
-
-    Notes
-    -----
-    This function crashes when there are >10M nonzero weights. A potential solution
-    would be some way to tell each work item to do multiple rows.
+    serial_reduction : bool
+        Accumulate each row with a single worker without local memory or parallel multiplication
+        Temporary; meant to test function interface without using special kernel features.
     """
     assert len(X) == len(Y) == 1
 
@@ -1442,33 +1440,21 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
 
         __local ${dtype} products[${wg_size}];
 
-//        if (isynapse == 0) {
-//          y[ineuron] = gid;
-//        }
 
         // Load into individual products
         if (isynapse < ${max_fanout}) {
             products[isynapse] = A_entries[ineuron * ${max_fanout} + isynapse] * x[A_columns[ineuron * ${max_fanout} + isynapse]];
-        } else {
-            products[isynapse] = 0;
         }
 
         // Do reduction across work group
-//        for (int offset = 1; offset < ${max_fanout}; offset *= 2) {
-//            int mask = 2 * offset - 1;
-//            barrier(CLK_LOCAL_MEM_FENCE);
-//            if (isynapse & mask == 0) {
-//                products[isynapse] += products[isynapse + offset];
-//            }
-//        }
-//        barrier(CLK_LOCAL_MEM_FENCE);
-//
-        // serial reduction, despite parallel local load and multiply
-        if (isynapse == 0) {
-            for (int k = 1; k < ${max_fanout}; k++) {
-                products[0] += products[k];
+        for (int offset = ${wg_size}; offset > 0; offset /= 2) {
+            //int mask = 2 * offset - 1;
+            barrier(CLK_LOCAL_MEM_FENCE);
+            if (isynapse < offset && isynapse + offset < ${max_fanout}) {
+                products[isynapse] += products[isynapse + offset];
             }
         }
+        barrier(CLK_LOCAL_MEM_FENCE);
 
         // Store value
         if (isynapse == 0) {
@@ -1483,8 +1469,8 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
     textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, max_fanout=A_fanouts)
     kern = kern_serial if serial_reduction else kern_parallel
     if not serial_reduction:
-        # wg_size = round_up(A_fanouts, 16)
-        wg_size = A_fanouts
+        wg_size = round_up(A_fanouts, 64)
+        # wg_size = A_fanouts
         textconf.update(wg_size=wg_size)
 
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
@@ -1499,7 +1485,6 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
     _fn = cl.Program(queue.context, text).build().ellpack_inc
     _fn.set_args(*full_args)
 
-    # TODO
     if serial_reduction:
         gsize = (round_up(Y.sizes[0], 4), 1)
         lsize = (4, 1)
@@ -1507,7 +1492,6 @@ def plan_ellpack_inc(queue, A_columns, A_entries, A_fanouts, X, Y, inc=False, ta
         nneurons = Y.sizes[0]
         gsize = (nneurons * textconf['wg_size'], 1)
         lsize = (textconf['wg_size'], 1)
-    breakpoint()
 
     plan = Plan(queue, _fn, gsize, lsize=lsize, name="cl_ellpack", tag=tag)
     plan.full_args = full_args  # prevent garbage-collection
