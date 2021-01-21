@@ -19,7 +19,7 @@ from nengo_ocl.clra_gemv import (
     plan_ellpack_twostep,
     plan_ellpack_nonlocal,
     plan_ellpack_serial,
-    plan_csr
+    plan_csr,
 )
 from nengo_ocl.clraggedarray import CLRaggedArray as CLRA
 from nengo_ocl.clraggedarray import to_device
@@ -385,14 +385,11 @@ def test_speed(ctx, rng):  # noqa: C901
         print("clBLAS: %0.3f" % timer.duration)
 
 
-@pytest.mark.parametrize("inc", [False])
+@pytest.mark.parametrize("inc", [False, True])
 @pytest.mark.parametrize("sparsity", [0.02, 0.8])
-@pytest.mark.parametrize("shape", [
-    32,
-    200,
-    2000,
-    1999, (10, 5000), (5000, 10), (20, 30)
-])
+@pytest.mark.parametrize(
+    "shape", [32, 200, 2000, 1999, (10, 5000), (5000, 10), (20, 30)]
+)
 def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     scipy_sparse = pytest.importorskip("scipy.sparse")
 
@@ -412,13 +409,13 @@ def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
         # random sparse matrix
         mask = rng.uniform(size=shape) < sparsity
         ii, jj = mask.nonzero()
-        assert len(ii) > 0, 'all elements zero. too sparse'  # Actually this should still work if all zeros
+        assert (
+            len(ii) > 0
+        ), "all elements zero. too sparse"  # Actually this should still work if all zeros
         data = rng.uniform(0, 1, size=len(ii))
         A = scipy_sparse.coo_matrix((data, (ii, jj)), shape=shape).tocsr()
         X = RA([rng.uniform(0, 1, size=shape[1])])
         Y = RA([rng.uniform(0, 1, size=shape[0])])
-    else:
-        raise ValueError('Invalid spmv_type: {}'.format(spmv_type))
 
     # -- prepare initial conditions on device
     queue = cl.CommandQueue(ctx)
@@ -428,8 +425,8 @@ def test_sparse(ctx, inc, rng, allclose, sparsity, shape, sparse_planner):
     assert allclose(Y, clY)
 
     # -- check for anticipated failures
-    if (sparse_planner in [plan_ellpack_serial, plan_ellpack_tree]
-        and any(len(rowdata) > 1024 for rowdata in A.tolil().rows)
+    if sparse_planner in [plan_ellpack_serial, plan_ellpack_tree] and any(
+        len(rowdata) > 1024 for rowdata in A.tolil().rows
     ):
         pytest.skip("Single-stage algorithms cannot work with >1024 workers")
 

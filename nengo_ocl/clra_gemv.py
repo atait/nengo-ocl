@@ -1241,15 +1241,18 @@ class plan_ragged_gather_gemv(gemv_prog):
 
 
 # These specifications hold data and don't do anything
-ell_matdata = namedtuple('ell_matdata', ['columns', 'entries', 'rowlens', 'ellwidth', 'nnz', 'shape'])
-csr_matdata = namedtuple('csr_matdata', ['indices', 'indptr', 'data', 'nnz', 'shape'])
+ell_matdata = namedtuple(
+    "ell_matdata", ["columns", "entries", "rowlens", "ellwidth", "nnz", "shape"]
+)
+csr_matdata = namedtuple("csr_matdata", ["indices", "indptr", "data", "nnz", "shape"])
 
 
 class spmv_prog:
-    ''' A sparse matrix vector multipy program.
-        Children class define storage format of sparse matrix on host and device,
-        as well as choosing the implementation of the algorithm
-    '''
+    """A sparse matrix vector multipy program.
+    Children class define storage format of sparse matrix on host and device,
+    as well as choosing the implementation of the algorithm
+    """
+
     #: Host matrix in numpy or scipy sparse with methods such as "dot"
     hA = None
     #: Host array data, depending on storage format required of algorithm. No methods.
@@ -1258,28 +1261,34 @@ class spmv_prog:
     dAstruct = None
 
     def __init__(
-        self, queue, hA, X, Y, inc=False, tag=None,
+        self,
+        queue,
+        hA,
+        X,
+        Y,
+        inc=False,
+        tag=None,
     ):
-        ''' Initializing will
-                - format the sparse matrix
-                - transfer matrix to device
-                - check the validity of device data
-                - create the plans
-            Most often, the caller will use prog_obj.plans after initializing
+        """Initializing will
+            - format the sparse matrix
+            - transfer matrix to device
+            - check the validity of device data
+            - create the plans
+        Most often, the caller will use prog_obj.plans after initializing
 
-            Parameters
-            ----------
-            queue : cl.CommandQueue
-                The queue for this plan
-            hA : np.array or scipy.sparse.spmat
-                Matrix to multiply in any type of format. Y = hA.dot(X)
-            X, Y : CLRaggedArrays of length 1
-                Input/output data.
-            inc : bool
-                Whether the plan will increment or set Y
-            tag : str
-                Tag for the plan
-        '''
+        Parameters
+        ----------
+        queue : cl.CommandQueue
+            The queue for this plan
+        hA : np.array or scipy.sparse.spmat
+            Matrix to multiply in any type of format. Y = hA.dot(X)
+        X, Y : CLRaggedArrays of length 1
+            Input/output data.
+        inc : bool
+            Whether the plan will increment or set Y
+        tag : str
+            Tag for the plan
+        """
         self.queue = queue
         self.hA = hA
         self.X = X
@@ -1294,9 +1303,16 @@ class spmv_prog:
             self.plans = self.choose_plans()
             self.assign_plan_characteristics(self.plans)
         except AttributeError as err:
-            if err.args[0] in ['to_hostdata', 'to_device', 'validate_data', 'choose_plans']:
-                raise NotImplementedError('spmv_prog must be subclassed with overloads of'
-                                          'to_hostdata, to_device, validate_data, and choose_plans.')
+            if err.args[0] in [
+                "to_hostdata",
+                "to_device",
+                "validate_data",
+                "choose_plans",
+            ]:
+                raise NotImplementedError(
+                    "spmv_prog must be subclassed with overloads of"
+                    "to_hostdata, to_device, validate_data, and choose_plans."
+                )
             raise
 
     def assign_plan_characteristics(self, plans):
@@ -1304,13 +1320,13 @@ class spmv_prog:
 
 
 class plan_ellpack(spmv_prog):
-    ''' Base class defining ELLPACK matrix storage format.
-        This class chooses implementation based on size of problem
-    '''
+    """Base class defining ELLPACK matrix storage format.
+    This class chooses implementation based on size of problem
+    """
 
     @staticmethod
     def scipy2elldata(scipy_mat, force_nonempty=True):
-        ''' Works with scipy sparse or numpy dense argument '''
+        """ Works with scipy sparse or numpy dense argument """
         scipy_mat = scipy_mat.copy()
         try:
             lilmat = scipy_mat.tolil()
@@ -1319,7 +1335,9 @@ class plan_ellpack(spmv_prog):
         shape = scipy_mat.shape
         rowlens = np.array([len(rowdata) for rowdata in lilmat.rows])
         ellwidth = max(rowlens)
-        ind_dtype = np.int32 if len(rowlens) < 2**32 and ellwidth < 2**32 else np.int64
+        ind_dtype = (
+            np.int32 if len(rowlens) < 2 ** 32 and ellwidth < 2 ** 32 else np.int64
+        )
         columns = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=ind_dtype)
         entries = np.zeros((scipy_mat.shape[0], max(rowlens)), dtype=np.float32)
         nnz = sum(rowlens)
@@ -1347,7 +1365,7 @@ class plan_ellpack(spmv_prog):
             self.hAstruct.rowlens,
             self.hAstruct.ellwidth,
             self.hAstruct.nnz,
-            self.hAstruct.shape
+            self.hAstruct.shape,
         )
 
     def validate_data(self):
@@ -1381,18 +1399,26 @@ class plan_ellpack(spmv_prog):
     def assign_plan_characteristics(self, plans):
         plan = plans[0]
         plan.flops_per_call = self.dAstruct.shape[0] * (2 * self.dAstruct.ellwidth - 1)
-        plan.bw_per_call = self.dAstruct.entries.nbytes + self.dAstruct.columns.nbytes + self.X.nbytes + self.Y.nbytes
-        plan.description = "groups: %d; shape: (%d, %d); nonzeros: %d; max fan-in: %d" % (
-            1,
-            *self.dAstruct.shape,
-            self.dAstruct.nnz,
-            self.dAstruct.ellwidth,
+        plan.bw_per_call = (
+            self.dAstruct.entries.nbytes
+            + self.dAstruct.columns.nbytes
+            + self.X.nbytes
+            + self.Y.nbytes
+        )
+        plan.description = (
+            "groups: %d; shape: (%d, %d); nonzeros: %d; max fan-in: %d"
+            % (
+                1,
+                *self.dAstruct.shape,
+                self.dAstruct.nnz,
+                self.dAstruct.ellwidth,
+            )
         )
 
 
 class plan_ellpack_tree(plan_ellpack):
-    ''' Same data handling as plan_ellpack, but forces a tree-based reduction implementation
-    '''
+    """Same data handling as plan_ellpack, but forces a tree-based reduction implementation"""
+
     def choose_plans(self):
         plan = spmv_ellpack_impl(
             self.queue,
@@ -1402,14 +1428,14 @@ class plan_ellpack_tree(plan_ellpack):
             self.Y,
             inc=self.inc,
             serial_reduction=False,
-            tag=self.tag
+            tag=self.tag,
         )
         return [plan]
 
 
 class plan_ellpack_serial(plan_ellpack):
-    ''' Uses a serial accumulation approach to separate performance characteristics
-    '''
+    """Uses a serial accumulation approach to separate performance characteristics"""
+
     def choose_plans(self):
         plan = spmv_ellpack_impl(
             self.queue,
@@ -1419,15 +1445,16 @@ class plan_ellpack_serial(plan_ellpack):
             self.Y,
             inc=self.inc,
             serial_reduction=True,
-            tag=self.tag
+            tag=self.tag,
         )
         return [plan]
 
 
 class plan_ellpack_twostep(plan_ellpack):
-    ''' Same data handling as plan_ellpack, but forces a two-step tree-based reduction implementation.
-        Between steps, the partial accumulants are stored in global memory.
-    '''
+    """Same data handling as plan_ellpack, but forces a two-step tree-based reduction implementation.
+    Between steps, the partial accumulants are stored in global memory.
+    """
+
     def choose_plans(self):
         plans = spmv_ellpacktwostep_impl(
             self.queue,
@@ -1436,7 +1463,7 @@ class plan_ellpack_twostep(plan_ellpack):
             self.X,
             self.Y,
             inc=self.inc,
-            tag=self.tag
+            tag=self.tag,
         )
         return plans
 
@@ -1446,13 +1473,19 @@ class plan_ellpack_twostep(plan_ellpack):
         wg_size = int(self.queue.device.max_work_group_size // 2)
         wg_per_synapse = round_up_power_of_2(self.dAstruct.ellwidth // wg_size)
 
-        lclplan.flops_per_call = self.dAstruct.shape[0] * (self.dAstruct.ellwidth + wg_size - 1)
+        lclplan.flops_per_call = self.dAstruct.shape[0] * (
+            self.dAstruct.ellwidth + wg_size - 1
+        )
         glblplan.flops_per_call = self.dAstruct.shape[0] * (wg_per_synapse - 1)
         lclplan.bw_per_call = (
-            self.dAstruct.entries.nbytes + self.dAstruct.columns.nbytes + self.X.nbytes
+            self.dAstruct.entries.nbytes
+            + self.dAstruct.columns.nbytes
+            + self.X.nbytes
             + self.Y.nbytes * wg_per_synapse  # for storing in accumulator
         )
-        lclplan.bw_per_call = self.Y.nbytes * (wg_per_synapse + 1)  # for loading from accumulator and storing in Y
+        lclplan.bw_per_call = self.Y.nbytes * (
+            wg_per_synapse + 1
+        )  # for loading from accumulator and storing in Y
 
         desc = "groups: %d; shape: (%d, %d); nonzeros: %d; max fan-in: %d" % (
             1,
@@ -1465,8 +1498,8 @@ class plan_ellpack_twostep(plan_ellpack):
 
 
 class plan_ellpack_nonlocal(plan_ellpack):
-    ''' Uses global memory only to separate performance characteristics
-    '''
+    """Uses global memory only to separate performance characteristics"""
+
     def choose_plans(self):
         plan = spmv_ellpacknonlocal_impl(
             self.queue,
@@ -1475,14 +1508,13 @@ class plan_ellpack_nonlocal(plan_ellpack):
             self.X,
             self.Y,
             inc=self.inc,
-            tag=self.tag
+            tag=self.tag,
         )
         return [plan]
 
 
 class plan_csr(spmv_prog):
-    ''' Compressed sparse row format
-    '''
+    """Compressed sparse row format"""
 
     @staticmethod
     def scipy2csrdata(scipy_mat, force_nonempty=True):
@@ -1492,7 +1524,7 @@ class plan_csr(spmv_prog):
             np.asarray(scipy_csr.indptr, dtype=np.int32),
             np.asarray(scipy_csr.data, dtype=np.float32),
             scipy_csr.nnz,
-            scipy_csr.shape
+            scipy_csr.shape,
         )
 
     def to_hostdata(self):
@@ -1504,7 +1536,7 @@ class plan_csr(spmv_prog):
             to_device(self.queue, self.hAstruct.indptr),
             to_device(self.queue, self.hAstruct.data),
             self.hAstruct.nnz,
-            self.hAstruct.shape
+            self.hAstruct.shape,
         )
 
     def validate_data(self):
@@ -1535,7 +1567,7 @@ class plan_csr(spmv_prog):
             self.X,
             self.Y,
             inc=self.inc,
-            tag=self.tag
+            tag=self.tag,
         )
         return [plan]
 
@@ -1543,8 +1575,11 @@ class plan_csr(spmv_prog):
         plan = plans[0]
         plan.flops_per_call = 2 * self.dAstruct.data.size
         plan.bw_per_call = (
-            self.dAstruct.data.nbytes + self.dAstruct.indices.nbytes + self.dAstruct.indptr.nbytes
-            + self.X.nbytes + self.Y.nbytes
+            self.dAstruct.data.nbytes
+            + self.dAstruct.indices.nbytes
+            + self.dAstruct.indptr.nbytes
+            + self.X.nbytes
+            + self.Y.nbytes
         )
         plan.description = "groups: %d; shape: (%d, %d); nonzeros: %d" % (
             1,
@@ -1606,7 +1641,9 @@ def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None)
     # --- dimensioning
     gsize = (Y.sizes[0], 1)
     lsize = None
-    textconf = dict(dtype=A_data.ctype, IndType=A_indices.ctype, inc=inc, Y_size=Y.sizes[0])
+    textconf = dict(
+        dtype=A_data.ctype, IndType=A_indices.ctype, inc=inc, Y_size=Y.sizes[0]
+    )
 
     # --- make the program
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
@@ -1628,7 +1665,9 @@ def spmv_csr_impl(queue, A_indices, A_indptr, A_data, X, Y, inc=False, tag=None)
     return plan
 
 
-def spmv_ellpack_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=None, serial_reduction=False):
+def spmv_ellpack_impl(
+    queue, A_columns, A_entries, X, Y, inc=False, tag=None, serial_reduction=False
+):
     """Implements a sparse matrix-vector multiply: Y += A * X or Y = A * X
 
     Parameters
@@ -1715,7 +1754,14 @@ def spmv_ellpack_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=None, se
     lsize = (1, wg_size)
 
     # --- make the program
-    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, ellwidth=A_ellwidth, wg_size=wg_size, serial_reduction=serial_reduction)
+    textconf = dict(
+        dtype=A_entries.ctype,
+        IndType=A_columns.ctype,
+        inc=inc,
+        ellwidth=A_ellwidth,
+        wg_size=wg_size,
+        serial_reduction=serial_reduction,
+    )
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
     full_args = (
         A_columns.base_data,
@@ -1735,14 +1781,14 @@ def spmv_ellpack_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=None, se
 
 
 def spmv_ellpacknonlocal_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=None):
-    ''' Does not use local memory. Sum accumulation is serial.
-        This is non-performant; purpose is to test the ELLPACK data interface
-        and assess the performance effect of coalesced memory access only.
+    """Does not use local memory. Sum accumulation is serial.
+    This is non-performant; purpose is to test the ELLPACK data interface
+    and assess the performance effect of coalesced memory access only.
 
-        Parameters
-        ----------
-        See spmv_ellpack_impl
-    '''
+    Parameters
+    ----------
+    See spmv_ellpack_impl
+    """
     kern = """
     __kernel void ellpack_inc(
         __global const ${IndType} *A_columns,
@@ -1774,7 +1820,9 @@ def spmv_ellpacknonlocal_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=
     lsize = None
 
     # --- make the program
-    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, ellwidth=A_ellwidth)
+    textconf = dict(
+        dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, ellwidth=A_ellwidth
+    )
     text = as_ascii(Template(kern, output_encoding="ascii").render(**textconf))
     full_args = (
         A_columns.base_data,
@@ -1794,20 +1842,20 @@ def spmv_ellpacknonlocal_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=
 
 
 def spmv_ellpacktwostep_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=None):
-    """ A two-step algorithm needed when the number of ELL columns
-        is greater than the number of workers that can fit in a work item.
+    """A two-step algorithm needed when the number of ELL columns
+    is greater than the number of workers that can fit in a work item.
 
-        The first kernel is similar to spmv_ellpack_impl, storing partial reductions in a global array.
-        The second kernel reduces that array, storing into Y.
+    The first kernel is similar to spmv_ellpack_impl, storing partial reductions in a global array.
+    The second kernel reduces that array, storing into Y.
 
-        Parameters
-        ----------
-        See spmv_ellpack_impl
+    Parameters
+    ----------
+    See spmv_ellpack_impl
 
-        Returns
-        -------
-        list(Plan)
-            Two plans corresponding to the two stages of reduction
+    Returns
+    -------
+    list(Plan)
+        Two plans corresponding to the two stages of reduction
     """
     kern = """
     __kernel void ellpack_lclreduce(
@@ -1893,7 +1941,14 @@ def spmv_ellpacktwostep_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=N
     nneurons, A_ellwidth = A_columns.shape
     wg_size = int(queue.device.max_work_group_size // 2)
     wg_per_synapse = round_up_power_of_2(A_ellwidth // wg_size)
-    textconf = dict(dtype=A_entries.ctype, IndType=A_columns.ctype, inc=inc, ellwidth=A_ellwidth, wg_size=wg_size, wg_per_synapse=wg_per_synapse)
+    textconf = dict(
+        dtype=A_entries.ctype,
+        IndType=A_columns.ctype,
+        inc=inc,
+        ellwidth=A_ellwidth,
+        wg_size=wg_size,
+        wg_per_synapse=wg_per_synapse,
+    )
 
     # --- allocate global memory to hold intermediate accumulants
     accumulator = to_device(queue, np.zeros((nneurons, wg_per_synapse), dtype=Y.dtype))
@@ -1905,13 +1960,9 @@ def spmv_ellpacktwostep_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=N
         A_entries.base_data,
         X.cl_starts.data,
         X.cl_buf.data,
-        accumulator.data
+        accumulator.data,
     )
-    full_args_glblreduce = (
-        Y.cl_starts.data,
-        Y.cl_buf.data,
-        accumulator.data
-    )
+    full_args_glblreduce = (Y.cl_starts.data, Y.cl_buf.data, accumulator.data)
 
     clprog = cl.Program(queue.context, text).build()
     _fn1_lcl = clprog.ellpack_lclreduce
@@ -1925,45 +1976,56 @@ def spmv_ellpacktwostep_impl(queue, A_columns, A_entries, X, Y, inc=False, tag=N
     gsize_glbl = (nneurons, wg_per_synapse)
     lsize_glbl = (1, wg_per_synapse)
 
-    plan1_lcl = Plan(queue, _fn1_lcl, gsize_lcl, lsize=lsize_lcl, name="cl_ellpack_wg", tag=tag)
+    plan1_lcl = Plan(
+        queue, _fn1_lcl, gsize_lcl, lsize=lsize_lcl, name="cl_ellpack_wg", tag=tag
+    )
     plan1_lcl.full_args = full_args_lclreduct  # prevent garbage-collection
-    plan2_glbl = Plan(queue, _fn2_glbl, gsize_glbl, lsize=lsize_glbl, name="cl_ellpack_reduce", tag=tag)
+    plan2_glbl = Plan(
+        queue,
+        _fn2_glbl,
+        gsize_glbl,
+        lsize=lsize_glbl,
+        name="cl_ellpack_reduce",
+        tag=tag,
+    )
     plan2_glbl.full_args = full_args_glblreduce  # prevent garbage-collection
 
     return [plan1_lcl, plan2_glbl]
 
 
 def plan_sparse_dot_inc(queue, hA, X, Y, inc=False, tag=None, algorithm=None):
-    ''' Determines which planner to use based on argument or the "NENGO_OCL_SPMV_ALGORITHM" environment variable
-        This function is mainly just to interface with the pattern in Simulator
+    """Determines which planner to use based on argument or the "NENGO_OCL_SPMV_ALGORITHM" environment variable
+    This function is mainly just to interface with the pattern in Simulator
 
-        Parameters
-        ----------
-        See spmv_prog.__init__
-        algorithm : str
-            String argument converted to a planner via algostr_to_planner
+    Parameters
+    ----------
+    See spmv_prog.__init__
+    algorithm : str
+        String argument converted to a planner via algostr_to_planner
 
-        Returns
-        -------
-        spmv_prog
-            An initialized spmv_prog object from which to get plans
-    '''
+    Returns
+    -------
+    spmv_prog
+        An initialized spmv_prog object from which to get plans
+    """
     if algorithm is None:
         pass  # Get from a config object. Not currently implemented
     if algorithm is None:
-        algorithm = os.environ.get('NENGO_OCL_SPMV_ALGORITHM', None)  # Get from an environment variable
+        algorithm = os.environ.get(
+            "NENGO_OCL_SPMV_ALGORITHM", None
+        )  # Get from an environment variable
     if algorithm is None:
-        algorithm = 'ELLPACK'  # The default
+        algorithm = "ELLPACK"  # The default
     planner_type = algostr_to_planner[algorithm]
     return planner_type(queue, hA, X, Y, inc=False, tag=None)
 
 
 #: Map of strings to planners
 algostr_to_planner = {
-    'ELLPACK': plan_ellpack,
-    'ELLPACK-tree': plan_ellpack_tree,
-    'ELLPACK-twostep': plan_ellpack_twostep,
-    'ELLPACK-nonlocal': plan_ellpack_nonlocal,
-    'ELLPACK-serial': plan_ellpack_serial,
-    'CSR': plan_csr,
+    "ELLPACK": plan_ellpack,
+    "ELLPACK-tree": plan_ellpack_tree,
+    "ELLPACK-serial": plan_ellpack_serial,
+    "ELLPACK-nonlocal": plan_ellpack_nonlocal,
+    "ELLPACK-twostep": plan_ellpack_twostep,
+    "CSR": plan_csr,
 }
