@@ -34,7 +34,7 @@ from nengo.networks.circularconvolution import circconv
 
 import nengo_ocl
 
-if len(sys.argv) not in (3, 4):
+if len(sys.argv) not in (3, 4, 5):
     print(__doc__)
     sys.exit()
 
@@ -155,8 +155,11 @@ for i, dim in enumerate(dims):
         print("%s, dims=%d exception" % (sim_name, dim))
         raise
 
-filename = "records_circconv_%s.yml" % (
-    (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
-)
+if len(sys.argv) > 4:
+    filename = sys.argv[4]
+else:
+    filename = "records_circconv_%s.yml" % (
+        (datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    )
 with open(filename, "w") as fh:
     yaml.dump(records, fh)
