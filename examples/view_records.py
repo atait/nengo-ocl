@@ -28,7 +28,13 @@ for recfile, records in by_recfile.items():
         by_name.setdefault(name, []).append(rec)
 
         if x_units is None:
-            x_units = "dim" if "dim" in rec else "neurons"
+            x_units = (
+                "dim"
+                if "dim" in rec
+                else "synapses"
+                if "synapses" in rec
+                else "neurons"
+            )
 
         if x_units not in rec:
             raise ValueError(
@@ -36,6 +42,7 @@ for recfile, records in by_recfile.items():
                 "%r does not have %r" % (x_units, recfile, x_units)
             )
 
+ms = 30
 for name, recs in by_name.items():
     print(name.strip())
     if name.strip() == "Tahiti":
@@ -62,14 +69,15 @@ for name, recs in by_name.items():
     for xx, rt, fname in zip(x, runtimes, filenames):
         print("  %4d, %8.3f, %s" % (xx, rt, fname))
 
-    # plt.plot(x, runtimes, ".-", markersize=30, label=name.strip() + " run")
+    plt.plot(x, runtimes, ".-", markersize=ms, label=name.strip() + " run")
     # plt.plot(x, buildtimes, ".-", markersize=30, label=name.strip() + " build")
     # plt.plot(x, warmtimes, ".-", markersize=30, label=name.strip() + " warm")
-    plt.plot(x, tottimes, ".-", markersize=30, label=name.strip() + " tot")
+    # plt.plot(x, tottimes, ".-", markersize=30, label=name.strip() + " tot")
+    ms = max(ms -4, 10)
     plt.yscale("log")
     plt.xscale("log")
 
-plt.xlabel("n. dimensions convolved" if x_units == "dim" else "n. neurons")
+plt.xlabel("n. dimensions convolved" if x_units == "dim" else "n. " + x_units)
 plt.ylabel("simulation time (seconds)")
 # plt.ylim(0, 20)
 plt.legend(loc=2)
