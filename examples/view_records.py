@@ -69,7 +69,10 @@ for name, recs in by_name.items():
     for xx, rt, fname in zip(x, runtimes, filenames):
         print("  %4d, %8.3f, %s" % (xx, rt, fname))
 
-    plt.plot(x, runtimes, ".-", markersize=ms, label=name.strip() + " run")
+    sops = [1000 * y for y in x]
+    sops_per_second = [s/r for r, s in zip(runtimes, sops)]
+
+    plt.plot(x, sops_per_second, ".-", markersize=ms, label=name.strip())
     # plt.plot(x, buildtimes, ".-", markersize=30, label=name.strip() + " build")
     # plt.plot(x, warmtimes, ".-", markersize=30, label=name.strip() + " warm")
     # plt.plot(x, tottimes, ".-", markersize=30, label=name.strip() + " tot")
@@ -78,7 +81,8 @@ for name, recs in by_name.items():
     plt.xscale("log")
 
 plt.xlabel("n. dimensions convolved" if x_units == "dim" else "n. " + x_units)
-plt.ylabel("simulation time (seconds)")
+plt.ylabel("Synaptic operations per second")
 # plt.ylim(0, 20)
-plt.legend(loc=2)
+plt.xlim(1e5, None)
+plt.legend()
 plt.show()

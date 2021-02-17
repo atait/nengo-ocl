@@ -21,15 +21,15 @@ nns = np.logspace(7, 20, 10, base=2).astype(int)[::-1]
 # nns = 2 ** np.arange(10, 19)[::-1]
 sims = [
     ("dl", "Nengo-DL"),
-#     ("ocl", "Nengo-OCL-csr"),
-#     ("ocl", "Nengo-OCL-ell"),
+    ("ocl", "Nengo-OCL-csr"),
+    ("ocl", "Nengo-OCL-ell"),
     ("ref", "Reference"),
 ]
 # Use to compare ELLPACK implementations
 from nengo_ocl.clra_gemv import algostr_to_planner
-sims += [("ocl", algo) for algo in algostr_to_planner.keys()]
+# sims += [("ocl", algo) for algo in algostr_to_planner.keys()]
 
-name2file = lambda name: "record_{}.yml".format(
+name2file = lambda name: "og_data_100/record_{}.yml".format(
     name
 )  # you can use slashes to load/save from subdirectories
 #####
